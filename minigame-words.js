@@ -143,7 +143,15 @@ function normalizeWord(value) {
 }
 
 const ANSWERS = parseWords(ANSWERS_TEXT);
-const VALID_GUESSES = new Set([...ANSWERS, ...parseWords(EXTRA_GUESSES_TEXT)]);
+// Palavras extras do dicionário aberto (arquivo de dados ao lado; linhas com # são comentários)
+const DICTIONARY_TEXT = require("fs")
+    .readFileSync(require("path").join(__dirname, "minigame-dicionario.txt"), "utf8")
+    .split("\n")
+    .map(line => line.trim())
+    .filter(line => !line.startsWith("#"))
+    .join(" ");
+
+const VALID_GUESSES = new Set([...ANSWERS, ...parseWords(EXTRA_GUESSES_TEXT), ...parseWords(DICTIONARY_TEXT)]);
 
 module.exports = {
     ANSWERS,
