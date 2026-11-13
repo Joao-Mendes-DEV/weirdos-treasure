@@ -1,0 +1,754 @@
+
+/* ========================================
+   WEIRDO'S TREASURE - PÁGINA INICIAL
+======================================== */
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    min-height: 100vh;
+    font-family: Georgia, "Times New Roman", serif;
+    color: #e8dfcf;
+    background:
+        radial-gradient(ellipse at 50% 0%, rgba(139, 100, 52, 0.18), transparent 55%),
+        repeating-linear-gradient(
+            135deg,
+            rgba(255,255,255,0.012) 0px,
+            rgba(255,255,255,0.012) 2px,
+            transparent 2px,
+            transparent 5px
+        ),
+        #211d19;
+}
+
+/* CABEÇALHO */
+
+.home-header {
+    min-height: 85px;
+    padding: 15px 7%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: linear-gradient(180deg, #30251b, #211912);
+    border-bottom: 2px solid #705332;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.4);
+}
+
+.home-logo {
+    display: flex;
+    flex-direction: column;
+    text-decoration: none;
+    color: #d6b77d;
+    letter-spacing: 3px;
+    font-size: 24px;
+    font-weight: bold;
+}
+
+.home-logo small {
+    color: #a98a58;
+    font-size: 11px;
+    letter-spacing: 6px;
+    margin-top: 3px;
+}
+
+/* LOGIN TWITCH */
+
+.twitch-login {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 12px 20px;
+    background: #9146FF;
+    color: #ffffff;
+    border: 1px solid #a970ff;
+    border-radius: 7px;
+    text-decoration: none;
+    font-family: Arial, sans-serif;
+    font-size: 14px;
+    font-weight: bold;
+    transition: background 0.2s, transform 0.2s;
+}
+
+.twitch-login svg {
+    width: 21px;
+    height: 21px;
+}
+
+.twitch-login:hover {
+    background: #772ce8;
+    transform: translateY(-2px);
+}
+
+/* CONTEÚDO */
+
+.home-content {
+    width: min(1100px, 90%);
+    margin: 0 auto;
+}
+
+/* DESTAQUE PRINCIPAL */
+
+.hero {
+    min-height: 370px;
+    margin: 40px 0;
+    padding: 65px 30px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    background:
+        radial-gradient(ellipse at center, rgba(170, 119, 51, 0.22), transparent 70%),
+        linear-gradient(145deg, #34271c, #1b1713);
+    border: 2px solid #755532;
+    border-radius: 12px;
+    box-shadow:
+        inset 0 0 30px rgba(0, 0, 0, 0.5),
+        0 8px 25px rgba(0, 0, 0, 0.35);
+}
+
+.hero-eyebrow {
+    color: #d6a85c;
+    font-size: 13px;
+    letter-spacing: 5px;
+}
+
+.hero h1 {
+    margin: 15px 0;
+    color: #e2bd7b;
+    font-size: clamp(30px, 5vw, 55px);
+    letter-spacing: 3px;
+    text-shadow: 2px 3px 5px #000;
+}
+
+.hero > p:not(.hero-eyebrow) {
+    max-width: 650px;
+    color: #c5b69f;
+    font-size: 17px;
+    line-height: 1.7;
+}
+
+.hero-button,
+.giveaway-button {
+    display: inline-block;
+    margin-top: 20px;
+    padding: 13px 25px;
+    background: linear-gradient(180deg, #c99b53, #98703a);
+    color: #1b140d;
+    border: 1px solid #e0bd78;
+    border-radius: 6px;
+    text-decoration: none;
+    font-weight: bold;
+    transition: filter 0.2s, transform 0.2s;
+}
+
+.hero-button:hover,
+.giveaway-button:hover {
+    filter: brightness(1.15);
+    transform: translateY(-2px);
+}
+
+/* SORTEIOS */
+
+.giveaways-section {
+    margin: 65px 0;
+}
+
+.giveaways-section > h2 {
+    color: #d6b77d;
+    font-size: 28px;
+    border-bottom: 1px solid #60482d;
+    padding-bottom: 15px;
+}
+
+.section-description {
+    color: #ad9f8a;
+    margin-bottom: 25px;
+}
+
+.giveaway-card,
+.empty-giveaway {
+    margin: 22px 0;
+    padding: 27px;
+    background: linear-gradient(145deg, #30251b, #211912);
+    border: 1px solid #705332;
+    border-radius: 9px;
+    box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
+}
+
+.active-card {
+    border: 2px solid #a77d3e;
+}
+
+.giveaway-status {
+    display: inline-block;
+    padding: 6px 11px;
+    border-radius: 4px;
+    font-family: Arial, sans-serif;
+    font-size: 11px;
+    font-weight: bold;
+    letter-spacing: 1px;
+}
+
+.active-status {
+    background: #365b36;
+    color: #c4edb8;
+    border: 1px solid #5b8c51;
+}
+
+.next-status {
+    background: #594326;
+    color: #f0d39b;
+    border: 1px solid #947044;
+}
+
+.giveaway-card h3,
+.empty-giveaway h3 {
+    color: #e2bd7b;
+    font-size: 23px;
+    margin: 17px 0 10px;
+}
+
+.giveaway-description {
+    color: #c5b69f;
+    line-height: 1.7;
+    white-space: pre-wrap;
+}
+
+.giveaway-dates {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px 30px;
+    margin-top: 20px;
+    padding-top: 15px;
+    border-top: 1px solid #55412b;
+    color: #b6a487;
+    font-size: 13px;
+}
+
+.empty-giveaway {
+    text-align: center;
+    padding: 40px 20px;
+}
+
+.empty-giveaway p {
+    color: #ad9f8a;
+}
+
+/* RODAPÉ */
+
+.home-footer {
+    margin-top: 80px;
+    padding: 30px 15px;
+    text-align: center;
+    background: #191511;
+    border-top: 1px solid #60482d;
+}
+
+.home-footer span {
+    color: #d6b77d;
+    letter-spacing: 3px;
+    font-weight: bold;
+}
+
+.home-footer p {
+    color: #94836c;
+    font-size: 13px;
+}
+
+/* RESPONSIVIDADE */
+
+@media (max-width: 700px) {
+    .home-header {
+        padding: 15px 5%;
+        gap: 12px;
+    }
+
+    .home-logo {
+        font-size: 19px;
+    }
+
+    .twitch-login {
+        padding: 10px 12px;
+        font-size: 12px;
+    }
+
+    .hero {
+        min-height: 320px;
+        padding: 40px 20px;
+    }
+
+    .hero-eyebrow {
+        letter-spacing: 2px;
+    }
+
+    .giveaway-dates {
+        flex-direction: column;
+        gap: 10px;
+    }
+}
+
+
+/* ========================================
+   BANNER DE DESTAQUE DO SORTEIO
+======================================== */
+
+.treasure-banner {
+    display: grid;
+    grid-template-columns: 0.9fr 1.1fr;
+    min-height: 350px;
+    overflow: hidden;
+    background: linear-gradient(145deg, #30251b, #1d1712);
+    border: 2px solid #8b683c;
+    border-radius: 12px;
+    box-shadow:
+        0 8px 25px rgba(0, 0, 0, 0.4),
+        inset 0 0 20px rgba(0, 0, 0, 0.25);
+}
+
+/* ESPAÇO DA IMAGEM */
+
+.treasure-art {
+    min-height: 350px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    overflow: hidden;
+    background:
+        radial-gradient(circle at center, rgba(211, 157, 65, 0.35), transparent 55%),
+        linear-gradient(145deg, #51402a, #211912 75%);
+    border-right: 1px solid #806039;
+}
+
+.treasure-art::before {
+    content: "";
+    position: absolute;
+    inset: 12px;
+    border: 1px solid rgba(214, 183, 125, 0.35);
+    border-radius: 5px;
+}
+
+.treasure-art .treasure-chest {
+    position: relative;
+    z-index: 1;
+    display: block;
+    width: 280px;
+    max-width: 80%;
+    height: auto;
+    image-rendering: pixelated;
+    filter: drop-shadow(0 10px 14px rgba(0, 0, 0, 0.45));
+}
+
+/* INFORMAÇÕES */
+
+.treasure-info {
+    padding: 30px;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+}
+
+.treasure-info h3 {
+    margin: 18px 0;
+    color: #e7c586;
+    font-size: clamp(22px, 3vw, 30px);
+    line-height: 1.2;
+    text-shadow: 2px 2px 4px #000;
+}
+
+.treasure-prize {
+    width: 100%;
+    padding: 15px;
+    background: rgba(0, 0, 0, 0.22);
+    border-left: 3px solid #b78b4b;
+}
+
+.treasure-label {
+    color: #d6ad69;
+    font-size: 10px;
+    letter-spacing: 2px;
+    font-weight: bold;
+}
+
+.treasure-prize p {
+    margin: 8px 0 0;
+    color: #c8baa4;
+    line-height: 1.6;
+    white-space: pre-wrap;
+}
+
+.treasure-dates {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 15px;
+    width: 100%;
+    margin-top: 20px;
+}
+
+.treasure-dates div {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+}
+
+.treasure-dates span {
+    color: #b68d52;
+    font-size: 10px;
+    letter-spacing: 2px;
+}
+
+.treasure-dates strong {
+    color: #e0d2bb;
+    font-size: 13px;
+    font-weight: normal;
+}
+
+/* BOTÃO DE COMPRA */
+
+.treasure-buy-button {
+    display: block;
+    width: 100%;
+    margin-top: auto;
+    padding: 15px 20px;
+    text-align: center;
+    text-decoration: none;
+    color: #21170c;
+    background: linear-gradient(180deg, #e2bd76, #a77a3d);
+    border: 1px solid #f0d49b;
+    border-radius: 6px;
+    font-family: Arial, sans-serif;
+    font-size: 13px;
+    font-weight: bold;
+    letter-spacing: 1.5px;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
+    transition: filter 0.2s, transform 0.2s;
+}
+
+.treasure-buy-button:hover {
+    filter: brightness(1.15);
+    transform: translateY(-2px);
+}
+
+/* CELULAR */
+
+@media (max-width: 700px) {
+    .treasure-banner {
+        grid-template-columns: 1fr;
+    }
+
+    .treasure-art {
+        min-height: 210px;
+        border-right: none;
+        border-bottom: 1px solid #806039;
+    }
+
+    .treasure-art .treasure-chest {
+        width: 200px;
+    }
+
+    .treasure-info {
+        padding: 22px;
+    }
+
+    .treasure-dates {
+        grid-template-columns: 1fr;
+    }
+
+    .treasure-buy-button {
+        margin-top: 25px;
+    }
+}
+
+/* Ajuste de espaçamento entre datas e botão */
+.treasure-dates {
+    margin-bottom: 25px;
+}
+
+.treasure-buy-button {
+    margin-top: 0;
+    flex-shrink: 0;
+}
+
+@media (max-width: 700px) {
+    .treasure-buy-button {
+        margin-top: 10px;
+    }
+}
+
+/* DATAS DO SORTEIO - DESTAQUE VISUAL */
+
+.treasure-dates {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    width: 100%;
+    margin-top: 22px;
+    margin-bottom: 25px;
+}
+
+.treasure-dates div {
+    padding: 15px;
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+    background: linear-gradient(145deg, #3a2d20, #251c14);
+    border: 1px solid #806039;
+    border-radius: 7px;
+    box-shadow: inset 0 0 12px rgba(0, 0, 0, 0.25);
+}
+
+.treasure-dates span {
+    color: #d6ad69;
+    font-size: 11px;
+    font-weight: bold;
+    letter-spacing: 2px;
+}
+
+.treasure-dates span::before {
+    content: "◷";
+    margin-right: 7px;
+    font-size: 15px;
+}
+
+.treasure-dates strong {
+    color: #f0dfbd;
+    font-size: 17px;
+    font-weight: bold;
+    line-height: 1.4;
+}
+
+@media (max-width: 700px) {
+    .treasure-dates {
+        grid-template-columns: 1fr;
+    }
+
+    .treasure-dates strong {
+        font-size: 16px;
+    }
+}
+
+/* ========================================
+   PRÓXIMOS SORTEIOS
+======================================== */
+
+.upcoming-giveaways {
+    display: grid;
+    gap: 22px;
+    margin-top: 40px;
+}
+
+.upcoming-title {
+    margin: 0;
+    color: #d6b77d;
+    font-size: 20px;
+    letter-spacing: 1px;
+}
+
+.treasure-banner-upcoming {
+    min-height: 280px;
+    border-color: #705332;
+}
+
+.treasure-banner-upcoming .treasure-art {
+    min-height: 280px;
+}
+
+.treasure-banner-upcoming .treasure-chest {
+    opacity: 0.85;
+    filter: saturate(0.75) drop-shadow(0 10px 14px rgba(0, 0, 0, 0.45));
+}
+
+.treasure-buy-button-disabled,
+.treasure-buy-button-disabled:hover {
+    cursor: not-allowed;
+    color: #a89574;
+    background: linear-gradient(180deg, #4a3a28, #33281c);
+    border-color: #705332;
+    box-shadow: none;
+    filter: none;
+    transform: none;
+}
+
+/* ========================================
+   FAIXA AO VIVO
+======================================== */
+
+.live-strip {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    height: 60px;
+    margin: 20px 0 0;
+    padding: 0 16px 0 0;
+    overflow: hidden;
+    text-decoration: none;
+    color: #e8dfcf;
+    background: linear-gradient(90deg, #3a2a1c, #211912);
+    border: 1px solid #705332;
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    transition: border-color 0.2s, transform 0.2s;
+}
+
+.live-strip:hover {
+    border-color: #d6a85c;
+    transform: translateY(-1px);
+}
+
+.live-strip-thumb {
+    flex-shrink: 0;
+    width: 107px;
+    height: 60px;
+    object-fit: cover;
+    border-right: 1px solid #705332;
+}
+
+.live-strip-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+    padding: 4px 8px;
+    color: #fff;
+    background: #b3261e;
+    border-radius: 4px;
+    font-family: Arial, sans-serif;
+    font-size: 11px;
+    font-weight: bold;
+    letter-spacing: 1px;
+}
+
+.live-strip-badge i {
+    width: 7px;
+    height: 7px;
+    background: #fff;
+    border-radius: 50%;
+    animation: live-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes live-pulse {
+    50% { opacity: 0.3; }
+}
+
+.live-strip-text {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    flex: 1;
+}
+
+.live-strip-text strong,
+.live-strip-text small {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.live-strip-text strong {
+    color: #e2bd7b;
+    font-size: 14px;
+}
+
+.live-strip-text small {
+    color: #ad9f8a;
+    font-size: 12px;
+}
+
+.live-strip-viewers {
+    flex-shrink: 0;
+    color: #e8dfcf;
+    font-family: Arial, sans-serif;
+    font-size: 13px;
+    font-weight: bold;
+}
+
+@media (max-width: 700px) {
+    .live-strip {
+        gap: 10px;
+        padding-right: 10px;
+    }
+
+    .live-strip-thumb {
+        width: 80px;
+    }
+
+    .live-strip-badge {
+        padding: 3px 6px;
+        font-size: 10px;
+    }
+
+    .treasure-banner-upcoming .treasure-art {
+        min-height: 190px;
+    }
+}
+
+/* ========================================
+   FAIXA OFFLINE
+======================================== */
+
+.live-strip-offline {
+    background: linear-gradient(90deg, #2c241c, #1d1813);
+    border-color: #5a4630;
+}
+
+.live-strip-avatar {
+    flex-shrink: 0;
+    width: 44px;
+    height: 44px;
+    margin-left: 8px;
+    object-fit: cover;
+    border: 2px solid #705332;
+    border-radius: 50%;
+    filter: grayscale(0.6);
+}
+
+.live-strip-badge.is-offline {
+    color: #d8ccb8;
+    background: #4a4036;
+}
+
+.live-strip-badge.is-offline i {
+    background: #8f8272;
+    animation: none;
+}
+
+.live-strip-offline .live-strip-text strong {
+    color: #d6c3a1;
+}
+
+.live-strip-cta {
+    flex-shrink: 0;
+    padding: 7px 12px;
+    color: #e2bd7b;
+    border: 1px solid #705332;
+    border-radius: 5px;
+    font-family: Arial, sans-serif;
+    font-size: 12px;
+    font-weight: bold;
+    white-space: nowrap;
+}
+
+.live-strip-offline:hover .live-strip-cta {
+    border-color: #d6a85c;
+}
+
+.live-strip-offline:not(:has(.live-strip-avatar)) {
+    padding-left: 14px;
+}
+
+@media (max-width: 700px) {
+    .live-strip-avatar {
+        width: 38px;
+        height: 38px;
+        margin-left: 6px;
+    }
+
+    .live-strip-cta {
+        display: none;
+    }
+}
