@@ -9352,6 +9352,75 @@ registerMinigame(app, {
     addStreamElementsPoints
 });
 
+// Texto do comando !sorteio do chat (o StreamElements busca este endereço com ${customapi})
+const CHAT_GIVEAWAY_CACHE_MS = 30 * 1000;
+let chatGiveawayCache = { text: null, at: 0 };
+
+function chatDateTime(value) {
+    const date = new Date(value);
+    const day = date.toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo", day: "2-digit", month: "2-digit" });
+    const time = date.toLocaleTimeString("pt-BR", { timeZone: "America/Sao_Paulo", hour: "2-digit", minute: "2-digit" });
+    return `${day} às ${time}`;
+}
+
+function chatTitle(value) {
+    const clean = String(value || "Sorteio").replace(/\s+/g, " ").trim();
+    return clean.length > 80 ? clean.slice(0, 77) + "..." : clean;
+}
+
+app.get("/chat/sorteio", async (req, res) => {
+    res.type("text/plain; charset=utf-8");
+    res.set("Cache-Control", "no-store");
+
+    if (chatGiveawayCache.text && Date.now() - chatGiveawayCache.at < CHAT_GIVEAWAY_CACHE_MS) {
+        return res.send(chatGiveawayCache.text);
+    }
+
+    try {
+        const nowIso = new Date().toISOString();
+
+        const [activeResult, upcomingResult] = await Promise.all([
+            supabase
+                .from("giveaways")
+                .select("title, ends_at")
+                .eq("status", "active")
+                .order("ends_at", { ascending: true })
+                .limit(3),
+            supabase
+                .from("giveaways")
+                .select("title, starts_at")
+                .eq("status", "draft")
+                .gt("starts_at", nowIso)
+                .order("starts_at", { ascending: true })
+                .limit(1)
+        ]);
+
+        if (activeResult.error) throw activeResult.error;
+        if (upcomingResult.error) throw upcomingResult.error;
+
+        const active = activeResult.data || [];
+        const upcoming = (upcomingResult.data || [])[0];
+        let text;
+
+        if (active.length === 1) {
+            text = `🏆 Sorteio ativo: ${chatTitle(active[0].title)} — compras até ${chatDateTime(active[0].ends_at)}. Garanta seus tickets: weirdostreasure.com.br/giveaways`;
+        } else if (active.length > 1) {
+            const list = active.map(item => `${chatTitle(item.title)} (até ${chatDateTime(item.ends_at)})`).join(" • ");
+            text = `🏆 Sorteios ativos: ${list}. Garanta seus tickets: weirdostreasure.com.br/giveaways`;
+        } else if (upcoming) {
+            text = `⏳ Nenhum sorteio aberto agora. Próximo: ${chatTitle(upcoming.title)}, começa em ${chatDateTime(upcoming.starts_at)}. weirdostreasure.com.br`;
+        } else {
+            text = "Nenhum sorteio ativo no momento. Fique de olho, novos tesouros vêm aí! weirdostreasure.com.br";
+        }
+
+        chatGiveawayCache = { text, at: Date.now() };
+        return res.send(text);
+    } catch (error) {
+        console.error("Erro no texto do !sorteio:", error.message);
+        return res.send("Confira os sorteios em weirdostreasure.com.br/giveaways");
+    }
+});
+
 // Verificação simples usada pela hospedagem: só diz que o servidor está respondendo
 app.get("/vivo", (req, res) => {
     res.set("Cache-Control", "no-store");
