@@ -9292,6 +9292,12 @@ app.get("/regras", async (req, res) => {
     `, "/regras"));
 });
 
+// Verificação simples usada pela hospedagem: só diz que o servidor está respondendo
+app.get("/vivo", (req, res) => {
+    res.set("Cache-Control", "no-store");
+    res.type("text/plain").send("ok");
+});
+
 // Saúde do site para monitores (ex.: UptimeRobot).
 // Responde 200 quando banco e chat estão funcionando; 503 quando algo precisa de atenção.
 app.get("/saude", async (req, res) => {

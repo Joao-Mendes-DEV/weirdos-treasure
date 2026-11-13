@@ -1,0 +1,11 @@
+# Nada disso entra na imagem enviada ao Fly.io
+.env
+.env.*
+node_modules
+backups
+.git
+banco
+scripts
+deploy
+*.md
+*.log
