@@ -24,6 +24,28 @@ const app = express();
 app.disable("x-powered-by");
 app.use(securityHeaders);
 
+// Ícone da aba (W dourado) em todas as páginas HTML
+const FAVICON_TAGS = [
+    '<link rel="icon" href="/favicon.ico" sizes="any">',
+    '<link rel="icon" href="/favicon.svg" type="image/svg+xml">',
+    '<link rel="apple-touch-icon" href="/apple-touch-icon.png">',
+    '<meta name="theme-color" content="#211912">'
+].join("");
+
+app.use((req, res, next) => {
+    const originalSend = res.send.bind(res);
+
+    res.send = (body) => {
+        if (typeof body === "string" && body.includes("</head>") && !body.includes('rel="icon"')) {
+            body = body.replace("</head>", () => FAVICON_TAGS + "</head>");
+        }
+
+        return originalSend(body);
+    };
+
+    next();
+});
+
 // Limites de requisições
 // O estado da Arena (consultado 1x por segundo pelo OBS) tem limite próprio
 const generalLimiter = createRateLimiter({
