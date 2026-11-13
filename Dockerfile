@@ -9,7 +9,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
 # Código do site
-COPY server.js security.js treasure-chest.js ./
+COPY server.js security.js treasure-chest.js minigame.js minigame-words.js ./
 COPY public ./public
 
 # Roda sem privilégios de administrador

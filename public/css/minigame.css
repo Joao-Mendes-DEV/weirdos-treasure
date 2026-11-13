@@ -1,0 +1,442 @@
+/* Minigame diário */
+[hidden] {
+    display: none !important;
+}
+
+.mg-page {
+    width: min(100% - 40px, 760px);
+    margin: 40px auto 60px;
+    color: #e8dfcf;
+    font-family: Georgia, serif;
+}
+
+.mg-header {
+    margin-bottom: 20px;
+    padding: 26px 28px;
+    background: linear-gradient(145deg, #30251b, #1d1712);
+    border: 2px solid #8b683c;
+    border-radius: 10px;
+    box-shadow: 0 8px 25px rgba(0, 0, 0, .3);
+}
+
+.mg-eyebrow {
+    color: #d6ad69;
+    font-size: 11px;
+    font-weight: bold;
+    letter-spacing: 2px;
+}
+
+.mg-header h1 {
+    margin: 10px 0 8px;
+    color: #e2bd76;
+    font-size: clamp(27px, 4vw, 36px);
+}
+
+.mg-header p {
+    margin: 0;
+    color: #c8baa4;
+    line-height: 1.6;
+}
+
+/* ----- Cronômetro e botão ----- */
+.mg-status {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    margin-bottom: 20px;
+    padding: 18px 22px;
+    background: rgba(0, 0, 0, .25);
+    border: 1px solid #705332;
+    border-radius: 10px;
+}
+
+.mg-timer {
+    color: #e8dfcf;
+    font-size: 16px;
+    line-height: 1.5;
+}
+
+.mg-timer strong {
+    color: #f0d49b;
+    font-size: 22px;
+    font-variant-numeric: tabular-nums;
+}
+
+.mg-timer.is-ready {
+    color: #9bd88f;
+    font-weight: bold;
+}
+
+.mg-start {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 12px 26px;
+    border: 1px solid #f0d49b;
+    border-radius: 7px;
+    background: linear-gradient(180deg, #c99b53, #98703a);
+    color: #21170c;
+    font-family: Georgia, serif;
+    font-size: 15px;
+    font-weight: bold;
+    letter-spacing: 1px;
+    text-decoration: none;
+    cursor: pointer;
+    transition: filter .2s, transform .2s;
+}
+
+.mg-start:hover:not(:disabled) {
+    filter: brightness(1.12);
+    transform: translateY(-1px);
+}
+
+.mg-start:disabled {
+    background: #3a2d20;
+    border-color: #5e4529;
+    color: #8e7d63;
+    cursor: not-allowed;
+}
+
+.mg-login {
+    background: #9146ff;
+    border-color: #a970ff;
+    color: #fff;
+    font-family: Arial, sans-serif;
+}
+
+/* ----- Tabuleiro ----- */
+.mg-game {
+    padding: 22px 16px;
+    background: linear-gradient(145deg, #30251b, #1d1712);
+    border: 1px solid #705332;
+    border-radius: 10px;
+}
+
+.mg-board {
+    display: grid;
+    grid-template-rows: repeat(6, 1fr);
+    gap: 7px;
+    width: min(100%, 330px);
+    margin: 0 auto;
+}
+
+.mg-row {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 7px;
+}
+
+.mg-row.is-shake {
+    animation: mg-shake .4s;
+}
+
+@keyframes mg-shake {
+    0%, 100% { transform: translateX(0); }
+    20%, 60% { transform: translateX(-7px); }
+    40%, 80% { transform: translateX(7px); }
+}
+
+.mg-tile {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    aspect-ratio: 1;
+    background: #15110d;
+    border: 2px solid #51402a;
+    border-radius: 6px;
+    color: #f0dfbd;
+    font-size: clamp(22px, 7vw, 30px);
+    font-weight: bold;
+    text-transform: uppercase;
+    user-select: none;
+}
+
+.mg-tile.is-filled {
+    border-color: #a98a58;
+    animation: mg-pop .12s;
+}
+
+@keyframes mg-pop {
+    50% { transform: scale(1.08); }
+}
+
+.mg-tile.is-g,
+.mg-tile-mini.is-g,
+.mg-key.is-g {
+    background: #3f7d3a;
+    border-color: #5fae5a;
+    color: #fff;
+}
+
+.mg-tile.is-y,
+.mg-tile-mini.is-y,
+.mg-key.is-y {
+    background: #b8901f;
+    border-color: #e0b84a;
+    color: #fff;
+}
+
+.mg-tile.is-r,
+.mg-tile-mini.is-r,
+.mg-key.is-r {
+    background: #7a2f26;
+    border-color: #a8473a;
+    color: #f3d7d0;
+}
+
+.mg-tile.is-reveal {
+    animation: mg-flip .45s ease both;
+}
+
+@keyframes mg-flip {
+    0% { transform: rotateX(0); }
+    50% { transform: rotateX(90deg); }
+    100% { transform: rotateX(0); }
+}
+
+.mg-message {
+    min-height: 26px;
+    margin: 14px 0 6px;
+    color: #f0d49b;
+    text-align: center;
+    font-size: 15px;
+}
+
+.mg-message.is-error {
+    color: #f0a48f;
+}
+
+/* ----- Teclado ----- */
+.mg-keyboard {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    width: min(100%, 520px);
+    margin: 8px auto 0;
+}
+
+.mg-key-row {
+    display: flex;
+    justify-content: center;
+    gap: 5px;
+}
+
+.mg-key {
+    flex: 1 1 0;
+    min-width: 0;
+    height: 50px;
+    padding: 0;
+    background: #4a3a28;
+    border: 1px solid #705332;
+    border-radius: 6px;
+    color: #f0dfbd;
+    font-family: Georgia, serif;
+    font-size: 16px;
+    font-weight: bold;
+    text-transform: uppercase;
+    cursor: pointer;
+}
+
+.mg-key.is-wide {
+    flex: 1.6 1 0;
+    font-size: 12px;
+}
+
+.mg-key:active {
+    filter: brightness(1.25);
+}
+
+/* ----- Resultado ----- */
+.mg-result {
+    margin-top: 20px;
+    padding: 24px;
+    text-align: center;
+    background: linear-gradient(145deg, #4a3818, #2a1f12);
+    border: 2px solid #e2bd76;
+    border-radius: 10px;
+}
+
+.mg-result.is-lost {
+    background: linear-gradient(145deg, #3a2420, #1d1712);
+    border-color: #a8473a;
+}
+
+.mg-result h2 {
+    margin: 0 0 8px;
+    color: #f0d49b;
+    font-size: 24px;
+}
+
+.mg-result p {
+    margin: 6px 0;
+    color: #e8dfcf;
+    line-height: 1.6;
+}
+
+.mg-result .mg-word {
+    display: inline-block;
+    margin-top: 6px;
+    padding: 6px 14px;
+    border: 1px solid #a98a58;
+    border-radius: 6px;
+    color: #f0d49b;
+    font-size: 22px;
+    font-weight: bold;
+    letter-spacing: 4px;
+}
+
+.mg-result .mg-points-won {
+    color: #9bd88f;
+    font-size: 28px;
+    font-weight: bold;
+}
+
+/* ----- Regras ----- */
+.mg-rules {
+    margin-top: 20px;
+    padding: 22px 24px;
+    background: linear-gradient(145deg, #30251b, #1d1712);
+    border: 1px solid #705332;
+    border-radius: 10px;
+}
+
+.mg-rules h2 {
+    margin: 0 0 12px;
+    color: #e2bd76;
+    font-size: 20px;
+}
+
+.mg-rules h3 {
+    margin: 18px 0 8px;
+    color: #e2bd76;
+    font-size: 16px;
+}
+
+.mg-rules ul {
+    margin: 0;
+    padding-left: 20px;
+}
+
+.mg-rules li {
+    color: #c8baa4;
+    line-height: 1.7;
+}
+
+.mg-rules strong {
+    color: #f0d49b;
+}
+
+.mg-legend {
+    display: grid;
+    gap: 8px;
+    margin: 12px 0 4px;
+    color: #c8baa4;
+}
+
+.mg-legend span {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.mg-tile-mini {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    border: 2px solid;
+    border-radius: 5px;
+    font-size: 15px;
+}
+
+.mg-points {
+    columns: 2;
+}
+
+/* ----- Aviso de saída ----- */
+.mg-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 2000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    background: rgba(0, 0, 0, .65);
+}
+
+.mg-modal-card {
+    max-width: 440px;
+    padding: 24px;
+    background: linear-gradient(145deg, #30251b, #1d1712);
+    border: 2px solid #a8473a;
+    border-radius: 12px;
+    text-align: center;
+}
+
+.mg-modal-card h2 {
+    margin: 0 0 10px;
+    color: #f0a48f;
+}
+
+.mg-modal-card p {
+    color: #e8dfcf;
+    line-height: 1.6;
+}
+
+.mg-modal-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 10px;
+    margin-top: 16px;
+}
+
+.mg-leave {
+    padding: 12px 20px;
+    background: transparent;
+    border: 1px solid #a8473a;
+    border-radius: 7px;
+    color: #f0a48f;
+    font-family: Georgia, serif;
+    font-size: 14px;
+    cursor: pointer;
+}
+
+@media (max-width: 600px) {
+    .mg-page {
+        width: calc(100% - 20px);
+        margin: 20px auto 40px;
+    }
+
+    .mg-header,
+    .mg-rules {
+        padding: 18px;
+    }
+
+    .mg-status {
+        flex-direction: column;
+        align-items: stretch;
+        text-align: center;
+    }
+
+    .mg-game {
+        padding: 16px 8px;
+    }
+
+    .mg-key {
+        height: 46px;
+        font-size: 14px;
+    }
+
+    .mg-key-row {
+        gap: 4px;
+    }
+
+    .mg-points {
+        columns: 1;
+    }
+}

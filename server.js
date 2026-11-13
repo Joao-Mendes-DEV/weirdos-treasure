@@ -14,6 +14,7 @@ const {
     SupabaseSessionStore,
     SESSION_TTL_MS
 } = require("./security");
+const registerMinigame = require("./minigame");
 
 validateEnvironment();
 
@@ -537,11 +538,13 @@ function publicSidebarHtml(req, activePath) {
             { href: "/dashboard", label: "Minha conta" },
             { href: "/giveaways", label: "Sorteios" },
             { href: "/my-tickets", label: "Meus tickets" },
+            { href: "/minigame", label: "Minigame diário" },
             { href: "/regras", label: "Regras" },
             ...(isAdmin ? [{ href: "/admin", label: "Painel administrativo" }] : [])
         ]
         : [
             { href: "/", label: "Início" },
+            { href: "/minigame", label: "Minigame diário" },
             { href: "/regras", label: "Regras" }
         ];
 
@@ -1624,6 +1627,10 @@ function requireCsrf(req, res, next) {
 const GIVEAWAY_TITLE_MAX = 120;
 const GIVEAWAY_DESCRIPTION_MAX = 2000;
 
+// Cópia de teste no PC: DISABLE_TWITCH_CHAT=1 impede conectar ao chat e salvar tokens do canal
+// (o site no ar já usa essa conexão; duas cópias conectadas duplicariam o chat)
+const TWITCH_CHAT_DISABLED = process.env.DISABLE_TWITCH_CHAT === "1";
+
 // Arena: duração do giro e tempo para o vencedor responder (contado a partir da revelação)
 const ARENA_SPIN_MS = 14000;
 const ARENA_RESPONSE_MS = 40000;
@@ -2091,7 +2098,7 @@ app.get("/auth/twitch", authLimiter, (req, res) => {
 
     req.session.postLoginRedirect = connectChannel
         ? "/admin/giveaways"
-        : returnTo === "/giveaways" ? "/giveaways" : "/dashboard";
+        : ["/giveaways", "/minigame"].includes(returnTo) ? returnTo : "/dashboard";
 
     const state = crypto.randomBytes(16).toString("hex");
 
@@ -2235,7 +2242,7 @@ app.get("/auth/twitch/callback", authLimiter, async (req, res) => {
         const grantedScopes = Array.isArray(validationData.scopes) ? validationData.scopes : [];
         const hasBroadcasterScopes = BROADCASTER_SCOPES.every(scope => grantedScopes.includes(scope));
 
-        if (isAdmin && connectChannel && hasBroadcasterScopes && tokenData.refresh_token) {
+        if (isAdmin && connectChannel && hasBroadcasterScopes && tokenData.refresh_token && !TWITCH_CHAT_DISABLED) {
             const expiresAt = Date.now() + (Number(tokenData.expires_in) * 1000);
 
             await saveTwitchBroadcasterTokens(
@@ -3050,6 +3057,11 @@ app.get("/dashboard", async (req, res) => {
             <a href="/my-tickets" class="dashboard-card">
                 <strong>✦ Meus Tickets</strong>
                 <span>Confira seus tickets e acompanhe suas participações.</span>
+            </a>
+
+            <a href="/minigame" class="dashboard-card">
+                <strong>✦ Minigame Diário</strong>
+                <span>Descubra a palavra secreta e ganhe até 180 pontos a cada 20 horas.</span>
             </a>
 
             <a href="https://www.twitch.tv/${LIVE_CHANNEL_LOGIN}" target="_blank" rel="noopener noreferrer" class="dashboard-card">
@@ -8961,8 +8973,8 @@ let chatReconnectNextAttemptAt = 0;
 let chatWatchdogRunning = false;
 
 async function checkTwitchChatConnection() {
-    // Canal ainda não conectado pelo administrador
-    if (!twitchBroadcasterId || !twitchBroadcasterAccessToken || chatWatchdogRunning) {
+    // Canal ainda não conectado pelo administrador (ou cópia de teste)
+    if (TWITCH_CHAT_DISABLED || !twitchBroadcasterId || !twitchBroadcasterAccessToken || chatWatchdogRunning) {
         return;
     }
 
@@ -9314,6 +9326,17 @@ app.get("/regras", async (req, res) => {
     `, "/regras"));
 });
 
+// Minigame diário (página /minigame e suas rotas)
+registerMinigame(app, {
+    supabase,
+    withPublicSidebar,
+    getCsrfToken,
+    requireCsrf,
+    createRateLimiter,
+    getStreamElementsChannelId,
+    addStreamElementsPoints
+});
+
 // Verificação simples usada pela hospedagem: só diz que o servidor está respondendo
 app.get("/vivo", (req, res) => {
     res.set("Cache-Control", "no-store");
@@ -9384,6 +9407,11 @@ const HOST = process.env.HOST || "0.0.0.0";
 
 app.listen(PORT, HOST, async () => {
     console.log(`Servidor iniciado em ${HOST}:${PORT}`);
+
+    if (TWITCH_CHAT_DISABLED) {
+        console.log("Cópia de teste: chat da Twitch desligado.");
+        return;
+    }
 
     await restoreTwitchBroadcasterAuthentication();
 });
