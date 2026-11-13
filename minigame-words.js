@@ -48,6 +48,7 @@ xampu zelar
 `;
 
 const EXTRA_GUESSES_TEXT = `
+colei colou cobre coque covil colho
 asas bocas botas cafes camas canos casos cocos colos cores cubas damas dicas dores falas
 fases fatos favas feras filas fitas fofos gatas guias jatos lamas lobas lucas luvas mamas
 medos minas modas modos molas motos mudas musas natas naves novos nozes obras ovais pacas

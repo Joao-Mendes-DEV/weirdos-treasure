@@ -158,6 +158,16 @@
     animation: mg-pop .12s;
 }
 
+/* Linha atual: clique em um quadrado para escolher onde digitar */
+.mg-tile.is-active {
+    cursor: pointer;
+}
+
+.mg-tile.is-cursor {
+    border-color: #f0c36b;
+    box-shadow: inset 0 -4px 0 #f0c36b, 0 0 10px rgba(240, 195, 107, .35);
+}
+
 @keyframes mg-pop {
     50% { transform: scale(1.08); }
 }
@@ -226,6 +236,7 @@
 .mg-key {
     flex: 1 1 0;
     min-width: 0;
+    max-width: 44px;
     height: 50px;
     padding: 0;
     background: #4a3a28;
@@ -240,7 +251,8 @@
 }
 
 .mg-key.is-wide {
-    flex: 1.6 1 0;
+    flex: 1.8 1 0;
+    max-width: 82px;
     font-size: 12px;
 }
 

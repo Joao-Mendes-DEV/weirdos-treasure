@@ -21,15 +21,17 @@
     };
 
     const KEY_ROWS = [
-        ["q", "w", "e", "r", "t", "y", "u", "i", "o", "p"],
-        ["a", "s", "d", "f", "g", "h", "j", "k", "l"],
-        ["enter", "z", "x", "c", "v", "b", "n", "m", "back"]
+        ["q", "w", "e", "r", "t", "y", "u", "i", "o", "p", "back"],
+        ["a", "s", "d", "f", "g", "h", "j", "k", "l", "enter"],
+        ["z", "x", "c", "v", "b", "n", "m"]
     ];
     const STATUS_RANK = { r: 1, y: 2, g: 3 };
 
     let state = null;
     let clockOffset = 0;
-    let current = [];
+    let current = ["", "", "", "", ""];
+    let cursor = 0;
+    const resetCurrent = () => { current = ["", "", "", "", ""]; cursor = 0; };
     let busy = false;
     let pendingHref = null;
     let leavingAllowed = false;
@@ -69,6 +71,7 @@
             for (let c = 0; c < 5; c++) {
                 const tile = document.createElement("div");
                 tile.className = "mg-tile";
+                tile.addEventListener("click", () => selectTile(r, c));
                 row.appendChild(tile);
             }
             els.board.appendChild(row);
@@ -116,7 +119,9 @@
                     }
                 } else if (r === attempts.length && isPlaying()) {
                     tile.textContent = current[c] || "";
+                    tile.classList.add("is-active");
                     if (current[c]) tile.classList.add("is-filled");
+                    if (c === cursor) tile.classList.add("is-cursor");
                 } else {
                     tile.textContent = "";
                 }
@@ -278,7 +283,7 @@
         busy = false;
 
         if ("canPlay" in data) state = data;
-        current = [];
+        resetCurrent();
         lastRenderedAttempts = 0;
         render(false);
 
@@ -292,8 +297,8 @@
     async function submitGuess() {
         if (busy || !isPlaying()) return;
 
-        if (current.length < 5) {
-            setMessage("A palavra precisa ter 5 letras.", true);
+        if (current.some(letter => !letter)) {
+            setMessage("Preencha os 5 quadrados.", true);
             shakeCurrentRow();
             return;
         }
@@ -306,7 +311,7 @@
             setMessage(data.error || "Não foi possível enviar.", true);
             if ("canPlay" in data) {
                 state = data;
-                current = [];
+                resetCurrent();
                 render(false);
             } else {
                 shakeCurrentRow();
@@ -315,7 +320,7 @@
         }
 
         state = data;
-        current = [];
+        resetCurrent();
         const grew = state.game && state.game.attempts.length > lastRenderedAttempts;
         lastRenderedAttempts = state.game ? state.game.attempts.length : 0;
         render(grew);
@@ -328,15 +333,40 @@
         }
     }
 
+    // Próximo quadrado vazio à direita (ou o primeiro vazio da linha)
+    function nextCursor(from) {
+        for (let i = from + 1; i < 5; i++) if (!current[i]) return i;
+        for (let i = 0; i < 5; i++) if (!current[i]) return i;
+        return Math.min(from + 1, 4);
+    }
+
+    function selectTile(row, column) {
+        const attempts = state && state.game ? state.game.attempts.length : 0;
+        if (!isPlaying() || busy || row !== attempts) return;
+        cursor = column;
+        renderBoard(false);
+    }
+
     function handleKey(key) {
         if (!isPlaying() || busy) return;
 
         if (key === "enter") return submitGuess();
 
         if (key === "back") {
-            current.pop();
-        } else if (/^[a-z]$/.test(key) && current.length < 5) {
-            current.push(key);
+            // Apaga o quadrado selecionado; se já estiver vazio, volta um
+            if (current[cursor]) {
+                current[cursor] = "";
+            } else if (cursor > 0) {
+                cursor -= 1;
+                current[cursor] = "";
+            }
+        } else if (key === "left") {
+            cursor = Math.max(0, cursor - 1);
+        } else if (key === "right") {
+            cursor = Math.min(4, cursor + 1);
+        } else if (/^[a-z]$/.test(key)) {
+            current[cursor] = key;
+            cursor = nextCursor(cursor);
         }
 
         setMessage("");
@@ -349,7 +379,9 @@
 
         const key = event.key;
         if (key === "Enter") { event.preventDefault(); handleKey("enter"); }
-        else if (key === "Backspace") { event.preventDefault(); handleKey("back"); }
+        else if (key === "Backspace" || key === "Delete") { event.preventDefault(); handleKey("back"); }
+        else if (key === "ArrowLeft") { event.preventDefault(); handleKey("left"); }
+        else if (key === "ArrowRight") { event.preventDefault(); handleKey("right"); }
         else {
             const letter = key.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
             if (/^[a-z]$/.test(letter)) handleKey(letter);

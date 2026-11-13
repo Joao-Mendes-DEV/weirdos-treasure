@@ -4681,7 +4681,7 @@ ${refundInProgress ? `
 
 app.get("/admin/users", requireAdmin, async (req, res) => {
     try {
-        const [users, tickets, transactions, drawsResult, activeResult, subscriberIds] = await Promise.all([
+        const [users, tickets, transactions, drawsResult, activeResult, subscriberIds, minigameWins] = await Promise.all([
             fetchAllRows((from, to) => supabase
                 .from("users")
                 .select("twitch_id, twitch_login, display_name, profile_image_url, created_at")
@@ -4710,7 +4710,15 @@ app.get("/admin/users", requireAdmin, async (req, res) => {
                 .select("id")
                 .eq("status", "active"),
 
-            getSubscriberIdsSafe()
+            getSubscriberIdsSafe(),
+
+            // Partidas ganhas no minigame diário
+            fetchAllRows((from, to) => supabase
+                .from("daily_word_games")
+                .select("twitch_id, points_awarded")
+                .eq("status", "won")
+                .order("started_at", { ascending: true })
+                .range(from, to))
         ]);
 
         if (drawsResult.error) console.error("Erro ao buscar rodadas:", drawsResult.error.message);
@@ -4720,7 +4728,7 @@ app.get("/admin/users", requireAdmin, async (req, res) => {
         const stats = new Map();
         const statsFor = (id) => {
             if (!stats.has(id)) {
-                stats.set(id, { tickets: 0, activeTickets: 0, giveaways: new Set(), points: 0, lastPurchase: null, wins: 0 });
+                stats.set(id, { tickets: 0, activeTickets: 0, giveaways: new Set(), points: 0, wins: 0, minigameWins: 0, minigamePoints: 0 });
             }
             return stats.get(id);
         };
@@ -4735,7 +4743,12 @@ app.get("/admin/users", requireAdmin, async (req, res) => {
         for (const transaction of transactions) {
             const entry = statsFor(transaction.twitch_id);
             entry.points += Number(transaction.points_spent) || 0;
-            entry.lastPurchase = transaction.created_at;
+        }
+
+        for (const game of minigameWins) {
+            const entry = statsFor(game.twitch_id);
+            entry.minigameWins++;
+            entry.minigamePoints += Number(game.points_awarded) || 0;
         }
 
         for (const draw of drawsResult.data || []) {
@@ -4749,7 +4762,7 @@ app.get("/admin/users", requireAdmin, async (req, res) => {
         const winnersCount = users.filter(user => stats.get(user.twitch_id)?.wins > 0).length;
 
         const rows = users.map(user => {
-            const entry = stats.get(user.twitch_id) || { tickets: 0, activeTickets: 0, giveaways: new Set(), points: 0, lastPurchase: null, wins: 0 };
+            const entry = stats.get(user.twitch_id) || { tickets: 0, activeTickets: 0, giveaways: new Set(), points: 0, wins: 0, minigameWins: 0, minigamePoints: 0 };
             const isSub = subscriberIds ? subscriberIds.has(user.twitch_id) : null;
 
             return `
@@ -4769,7 +4782,8 @@ app.get("/admin/users", requireAdmin, async (req, res) => {
                     <td data-value="${entry.giveaways.size}">${adminNumber(entry.giveaways.size)}</td>
                     <td data-value="${entry.points}">${adminNumber(entry.points)}</td>
                     <td data-value="${entry.wins}">${entry.wins ? `<span class="badge badge-winner">🏆 ${adminNumber(entry.wins)}</span>` : "—"}</td>
-                    <td data-value="${escapeDashboardHtml(entry.lastPurchase || "")}">${adminDateTime(entry.lastPurchase)}</td>
+                    <td data-value="${entry.minigameWins}">${adminNumber(entry.minigameWins)}</td>
+                    <td data-value="${entry.minigamePoints}">${adminNumber(entry.minigamePoints)}</td>
                     <td data-value="${escapeDashboardHtml(user.created_at || "")}">${adminDate(user.created_at)}</td>
                 </tr>
             `;
@@ -4802,12 +4816,13 @@ app.get("/admin/users", requireAdmin, async (req, res) => {
                             <th data-sort="number">Sorteios</th>
                             <th data-sort="number">Pontos gastos</th>
                             <th data-sort="number">Vitórias</th>
-                            <th data-sort="text">Última compra</th>
+                            <th data-sort="number">Acertos no minigame</th>
+                            <th data-sort="number">Pontos no minigame</th>
                             <th data-sort="text">Cadastro</th>
                         </tr>
                     </thead>
                     <tbody>
-                        ${rows || `<tr class="empty-row"><td colspan="9">Nenhum usuário cadastrado.</td></tr>`}
+                        ${rows || `<tr class="empty-row"><td colspan="10">Nenhum usuário cadastrado.</td></tr>`}
                     </tbody>
                 </table>
             </div>
