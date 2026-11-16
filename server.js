@@ -603,6 +603,28 @@ function withPublicSidebar(req, html, activePath) {
         .replace(/<body[^>]*>/, match => `${match}${publicSidebarHtml(req, activePath)}`);
 }
 
+// ===== Datas no horário de Brasília =====
+// O <input type="datetime-local"> manda "AAAA-MM-DDTHH:MM" sem fuso. O servidor
+// roda em UTC, então interpretamos sempre como horário de Brasília (UTC-3, sem
+// horário de verão desde 2019).
+function parseBrDateTime(value) {
+    const text = String(value || "").trim();
+    const hasOffset = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(text);
+    return new Date(hasOffset ? text : `${text}-03:00`);
+}
+
+// Inverso do parseBrDateTime: valor para preencher um datetime-local.
+function toBrDateTimeInput(date) {
+    const parts = Object.fromEntries(
+        new Intl.DateTimeFormat("en-CA", {
+            timeZone: "America/Sao_Paulo",
+            year: "numeric", month: "2-digit", day: "2-digit",
+            hour: "2-digit", minute: "2-digit", hourCycle: "h23"
+        }).formatToParts(new Date(date)).map(part => [part.type, part.value])
+    );
+    return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
+}
+
 // ===== Gráficos do painel administrativo =====
 function brDayKey(date) {
     return new Date(date).toLocaleDateString("en-CA", {
@@ -3899,8 +3921,8 @@ app.post("/admin/giveaways", requireAdmin, requireCsrf, async (req, res) => {
         );
     }
 
-    const startDate = new Date(starts_at);
-    const endDate = new Date(ends_at);
+    const startDate = parseBrDateTime(starts_at);
+    const endDate = parseBrDateTime(ends_at);
 
     if (
         Number.isNaN(startDate.getTime()) ||
@@ -4075,13 +4097,7 @@ app.get("/admin/giveaways/:id/edit", requireAdmin, async (req, res) => {
         })[char]
     );
 
-    const toLocalDateTime = (date) => {
-        const localDate = new Date(
-            new Date(date).getTime() - new Date(date).getTimezoneOffset() * 60000
-        );
-
-        return localDate.toISOString().slice(0, 16);
-    };
+    const toLocalDateTime = toBrDateTimeInput;
 
     res.send(`
         <!DOCTYPE html>
@@ -4180,8 +4196,8 @@ app.post("/admin/giveaways/:id/edit", requireAdmin, requireCsrf, async (req, res
         );
     }
 
-    const startDate = new Date(starts_at);
-    const endDate = new Date(ends_at);
+    const startDate = parseBrDateTime(starts_at);
+    const endDate = parseBrDateTime(ends_at);
 
     if (
         Number.isNaN(startDate.getTime()) ||
@@ -5294,7 +5310,7 @@ app.get("/admin/reconciliation", requireAdmin, async (req, res) => {
             <td>${emittedTicketsByTransaction[transaction.id] || 0}</td>
             <td>${getTicketEmissionStatus(transaction)}</td>
             <td>${escapeHtml(transaction.status)}</td>
-            <td>${transaction.created_at ? new Date(transaction.created_at).toLocaleString("pt-BR") : "-"}</td>
+            <td>${transaction.created_at ? adminDateTime(transaction.created_at) : "-"}</td>
             <td>
                 <a href="/admin/transactions/${encodeURIComponent(transaction.id)}/reconcile">
                     Conferir compra
@@ -5396,8 +5412,8 @@ const giveawayRows = (giveaways || []).map(giveaway => `
     <tr>
         <td>${escapeHtml(giveaway.title)}</td>
         <td>${escapeHtml(giveaway.status)}</td>
-        <td>${giveaway.starts_at ? new Date(giveaway.starts_at).toLocaleString("pt-BR") : "-"}</td>
-        <td>${giveaway.ends_at ? new Date(giveaway.ends_at).toLocaleString("pt-BR") : "-"}</td>
+        <td>${giveaway.starts_at ? adminDateTime(giveaway.starts_at) : "-"}</td>
+        <td>${giveaway.ends_at ? adminDateTime(giveaway.ends_at) : "-"}</td>
         
 <td>
     <div class="giveaway-actions">
