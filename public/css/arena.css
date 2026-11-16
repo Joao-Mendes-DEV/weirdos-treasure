@@ -561,6 +561,104 @@ main {
     text-overflow: ellipsis;
 }
 
+/* ===== Sorteio pelo chat (!euquero) ===== */
+.signup-banner {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 150px;
+    padding: 12px;
+    background: #100d0a;
+    border: 2px solid #76552d;
+    border-radius: 8px;
+    box-shadow: inset 0 0 25px #000;
+}
+
+.signup-call {
+    color: #b9ad9b;
+    font-size: 12px;
+    letter-spacing: 4px;
+}
+
+.signup-command {
+    margin-top: 4px;
+    color: #fff1cf;
+    font-size: clamp(30px, 5vw, 46px);
+    font-weight: bold;
+    letter-spacing: 2px;
+    text-shadow: 0 0 20px rgba(240, 195, 107, .7);
+}
+
+.signup-timer {
+    margin-top: 6px;
+    color: #f0c36b;
+    font-size: 30px;
+    font-weight: bold;
+    font-variant-numeric: tabular-nums;
+}
+
+.signup-timer.is-ending {
+    color: #ff8a73;
+    animation: drama-blink .8s ease-in-out infinite;
+}
+
+.signup-note {
+    color: #8e7d63;
+    font-size: 11px;
+    letter-spacing: 1px;
+}
+
+.draw-button-secondary {
+    background: transparent;
+    color: #e2bd7b;
+    border-color: #76552d;
+}
+
+/* Inscritos lado a lado, compactos (cabe bastante gente sem ocupar a tela) */
+.chat-entries-panel {
+    padding: 12px 14px;
+}
+
+.chat-entries-panel h2 {
+    font-size: 13px;
+    letter-spacing: 2px;
+}
+
+.chat-entries-panel h2 strong {
+    color: #fff1cf;
+}
+
+.chat-entries-panel #participantsList {
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 6px;
+    max-height: 210px;
+}
+
+.chat-entries-panel .participant-item {
+    gap: 7px;
+    padding: 4px 8px;
+}
+
+.chat-entries-panel .participant-avatar {
+    width: 24px;
+    height: 24px;
+    border-width: 1px;
+    font-size: 11px;
+    line-height: 22px;
+}
+
+.chat-entries-panel .participant-name {
+    flex: 1;
+    font-size: 13px;
+}
+
+.participant-number {
+    flex-shrink: 0;
+    color: #8e7d63;
+    font-size: 11px;
+}
+
 /* ===== Celebração ===== */
 #fireworks {
     position: fixed;

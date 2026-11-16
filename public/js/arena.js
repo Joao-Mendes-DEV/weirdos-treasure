@@ -11,6 +11,9 @@
     const REVEAL_DELAY_MS = 350;
     const CELEBRATION_MS = 7000;
     const SOUND_ENABLED = new URLSearchParams(location.search).get("som") !== "0";
+    // Sorteio pelo chat (!euquero): cada inscrição faz o papel de um ticket
+    const IS_CHAT = body.dataset.kind === "chat";
+    const ENTRY_LABEL = IS_CHAT ? "INSCRIÇÃO #" : "TICKET #";
 
     const $ = (id) => document.getElementById(id);
     const els = {
@@ -35,7 +38,10 @@
         celebrationAvatar: $("celebrationAvatar"),
         celebrationName: $("celebrationName"),
         celebrationTicket: $("celebrationTicket"),
-        canvas: $("fireworks")
+        canvas: $("fireworks"),
+        signupBanner: $("signupBanner"),
+        signupTimer: $("signupTimer"),
+        closeSignupButton: $("closeSignupButton")
     };
 
     let state = null;
@@ -317,7 +323,7 @@
             finished: false
         };
 
-        setCaption(elapsed < motion.dramaStart ? "OS TICKETS ESTÃO GIRANDO..." : "SERÁ QUE...?", elapsed < motion.dramaStart ? "" : "drama");
+        setCaption(elapsed < motion.dramaStart ? (IS_CHAT ? "OS NOMES ESTÃO GIRANDO..." : "OS TICKETS ESTÃO GIRANDO...") : "SERÁ QUE...?", elapsed < motion.dramaStart ? "" : "drama");
         requestAnimationFrame(spinFrame);
     }
 
@@ -350,7 +356,7 @@
     function finishSpin(t) {
         spin.finished = true;
         spin.winnerCard.classList.add("is-winner");
-        setCaption("🏆 TICKET #" + spin.winnerTicket.ticket_number + " — " + spin.winnerTicket.display_name, "winner");
+        setCaption("🏆 " + ENTRY_LABEL + spin.winnerTicket.ticket_number + " — " + spin.winnerTicket.display_name, "winner");
 
         if (t - SPIN_MS < CELEBRATION_MS && celebratedDrawId !== spin.drawId) {
             celebratedDrawId = spin.drawId;
@@ -369,20 +375,20 @@
         els.track.appendChild(card);
         const { cardWidth } = trackGeometry();
         els.track.style.transform = "translateX(" + (els.caseWindow.clientWidth / 2 - cardWidth / 2) + "px)";
-        setCaption("🏆 TICKET #" + winnerTicket.ticket_number + " — " + winnerTicket.display_name, "winner");
+        setCaption("🏆 " + ENTRY_LABEL + winnerTicket.ticket_number + " — " + winnerTicket.display_name, "winner");
         spin = { drawId: data.currentDraw.id, finished: true, winnerTicket };
     }
 
     function showIdleStrip(data) {
         const pool = data.ticketPool || [];
-        const signature = pool.length + ":" + (pool[0] ? pool[0].ticket_number : "");
+        const signature = pool.length + ":" + (pool[0] ? pool[0].ticket_number : "") + ":" + data.giveaway.status;
         if (signature === idleSignature && els.track.childElementCount > 0) return;
         idleSignature = signature;
 
         els.track.replaceChildren();
         if (pool.length === 0) {
             els.caseEmpty.hidden = false;
-            setCaption("Nenhum ticket neste sorteio.", "");
+            setCaption(IS_CHAT ? "Ninguém se inscreveu." : "Nenhum ticket neste sorteio.", "");
             return;
         }
 
@@ -433,7 +439,7 @@
 
     function celebrate(winnerTicket) {
         els.celebrationName.textContent = winnerTicket.display_name;
-        els.celebrationTicket.textContent = "TICKET #" + winnerTicket.ticket_number;
+        els.celebrationTicket.textContent = ENTRY_LABEL + winnerTicket.ticket_number;
         const avatar = avatarElement("celebration-avatar", winnerTicket.profile_image_url, winnerTicket.display_name);
         avatar.id = "celebrationAvatar";
         els.celebrationAvatar.replaceWith(avatar);
@@ -607,13 +613,15 @@
 
     function renderParticipants(data) {
         const winnerIds = new Set((data.draws || []).filter(isRevealed).map((draw) => String(draw.winner_twitch_id)));
-        const signature = (data.participants || []).map((p) => p.twitch_id + (winnerIds.has(String(p.twitch_id)) ? "*" : "")).join(",");
+        const signature = (data.participants || []).map((p) => p.twitch_id + (p.profile_image_url ? "i" : "") + (winnerIds.has(String(p.twitch_id)) ? "*" : "")).join(",");
         if (signature === participantsSignature) return;
         participantsSignature = signature;
 
         els.participantsList.replaceChildren();
         if (!data.participants || data.participants.length === 0) {
-            els.participantsList.textContent = "Nenhum participante ainda.";
+            els.participantsList.textContent = IS_CHAT
+                ? (data.giveaway.status === "active" ? "Ninguém se inscreveu ainda. Digite " + (data.chatCommand || "!euquero") + " no chat!" : "Ninguém se inscreveu.")
+                : "Nenhum participante ainda.";
             return;
         }
 
@@ -625,6 +633,12 @@
             label.className = "participant-name";
             label.textContent = (winnerIds.has(String(participant.twitch_id)) ? "🏆 " : "") + name;
             item.append(avatarElement("participant-avatar", participant.profile_image_url, name), label);
+            if (IS_CHAT && participant.entry_number) {
+                const number = document.createElement("span");
+                number.className = "participant-number";
+                number.textContent = "#" + participant.entry_number;
+                item.append(number);
+            }
             els.participantsList.appendChild(item);
         });
     }
@@ -665,7 +679,7 @@
             } else {
                 const displayName = draw.display_name || "Vencedor";
                 name.textContent = displayName;
-                detail.textContent = "Rodada " + draw.round_number + " · Ticket #" + draw.winning_ticket_number;
+                detail.textContent = "Rodada " + draw.round_number + (IS_CHAT ? " · Inscrição #" : " · Ticket #") + draw.winning_ticket_number;
 
                 if (draw.status === "confirmed") {
                     item.className = "winner-item is-confirmed";
@@ -749,14 +763,25 @@
         let hint = "";
         let disabled = true;
 
+        const allWinnersConfirmed = IS_CHAT && data.confirmedWinners >= data.giveaway.winnersCount;
+
+        if (els.closeSignupButton) {
+            els.closeSignupButton.hidden = data.giveaway.status !== "active";
+            els.closeSignupButton.disabled = requestInFlight;
+        }
+
         if (requestInFlight) {
-            hint = "Sorteando...";
+            hint = "Aguarde...";
+        } else if (IS_CHAT && data.giveaway.status === "active") {
+            hint = "Aguarde o fim das inscrições para girar.";
         } else if (data.giveaway.status !== "closed") {
             hint = "Encerre o sorteio para poder girar.";
         } else if (spinning) {
             hint = "Girando...";
         } else if (awaiting) {
             hint = "Aguardando resposta do vencedor (" + secondsLeft(draw) + "s)";
+        } else if (allWinnersConfirmed) {
+            hint = "Todos os ganhadores confirmados!";
         } else if (data.eligibleParticipantsLeft === 0) {
             hint = "Todos os participantes já foram sorteados.";
         } else {
@@ -765,21 +790,56 @@
         }
 
         els.drawButton.disabled = disabled;
-        els.drawButton.textContent = (data.draws && data.draws.length > 0) ? "✦ SORTEAR NOVAMENTE ✦" : "✦ INICIAR GIRO ✦";
+        els.drawButton.textContent = (data.draws && data.draws.length > 0)
+            ? (IS_CHAT && data.confirmedWinners > 0 && !allWinnersConfirmed ? "✦ PRÓXIMO GANHADOR ✦" : "✦ SORTEAR NOVAMENTE ✦")
+            : "✦ INICIAR GIRO ✦";
         els.drawHint.textContent = hint;
         els.drawHint.classList.toggle("is-error", !disabled && Boolean(drawError));
     }
 
+    const CHAT_STATUS_TEXT = {
+        active: "INSCRIÇÕES ABERTAS",
+        closed: "INSCRIÇÕES ENCERRADAS",
+        cancelled: "SORTEIO CANCELADO"
+    };
+
+    function formatClock(ms) {
+        const total = Math.max(0, Math.ceil(ms / 1000));
+        const minutes = Math.floor(total / 60);
+        const seconds = total % 60;
+        return String(minutes).padStart(2, "0") + ":" + String(seconds).padStart(2, "0");
+    }
+
+    // Faixa "DIGITE !euquero" com o tempo restante (no lugar do giro enquanto as inscrições estão abertas)
+    function renderSignup(data) {
+        if (!IS_CHAT || !els.signupBanner) return;
+
+        const open = data.giveaway.status === "active";
+        els.signupBanner.hidden = !open;
+        els.caseWindow.hidden = open;
+
+        if (open) {
+            const left = new Date(data.giveaway.endsAt).getTime() - serverNow();
+            els.signupTimer.textContent = formatClock(left);
+            els.signupTimer.classList.toggle("is-ending", left <= 10000);
+            setCaption(left > 0 ? "Inscrições abertas" : "Encerrando inscrições...", "");
+        }
+    }
+
     function render(data) {
         els.title.textContent = data.giveaway.title;
-        els.meta.textContent = STATUS_TEXT[data.giveaway.status] || "";
+        els.meta.textContent = (IS_CHAT ? CHAT_STATUS_TEXT : STATUS_TEXT)[data.giveaway.status] || "";
         els.meta.classList.toggle("is-active", data.giveaway.status === "active");
 
         els.participantCount.textContent = data.totalParticipants;
-        els.ticketCount.textContent = data.totalTickets;
-        els.totalTickets.textContent = data.totalTickets;
-        els.totalParticipants.textContent = data.totalParticipants;
-        els.multiplier.textContent = data.subscriberMultiplier;
+        els.ticketCount.textContent = IS_CHAT
+            ? data.confirmedWinners + "/" + data.giveaway.winnersCount
+            : data.totalTickets;
+        if (els.totalTickets) els.totalTickets.textContent = data.totalTickets;
+        if (els.totalParticipants) els.totalParticipants.textContent = data.totalParticipants;
+        if (els.multiplier) els.multiplier.textContent = data.subscriberMultiplier;
+
+        renderSignup(data);
 
         renderParticipants(data);
         renderWinners(data);
@@ -842,12 +902,41 @@
         }
     }
 
+    async function requestCloseSignup() {
+        if (requestInFlight) return;
+        if (!window.confirm("Encerrar as inscrições agora?")) return;
+        requestInFlight = true;
+        drawError = "";
+
+        try {
+            const response = await fetch("/admin/sorteio-chat/" + encodeURIComponent(GIVEAWAY_ID) + "/encerrar", {
+                method: "POST",
+                credentials: "same-origin",
+                headers: {
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "X-Requested-With": "fetch"
+                },
+                body: "_csrf=" + encodeURIComponent(CSRF)
+            });
+            if (!response.ok) drawError = "Não foi possível encerrar as inscrições.";
+        } catch (error) {
+            drawError = "Falha de conexão. Tente novamente.";
+        } finally {
+            requestInFlight = false;
+            await refresh();
+        }
+    }
+
     if (IS_ADMIN && els.drawButton) {
         els.drawButton.addEventListener("click", requestDraw);
+    }
+
+    if (IS_ADMIN && els.closeSignupButton) {
+        els.closeSignupButton.addEventListener("click", requestCloseSignup);
     }
 
     refresh();
     setInterval(refresh, 1000);
     // Contadores mais suaves entre uma consulta e outra
-    setInterval(() => { if (state) { renderWinners(state); renderControls(state); } }, 250);
+    setInterval(() => { if (state) { renderWinners(state); renderControls(state); renderSignup(state); } }, 250);
 })();

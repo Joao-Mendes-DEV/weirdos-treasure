@@ -778,6 +778,7 @@ const ADMIN_NAV_LINKS = [
     { href: "/admin", label: "Início" },
     { href: "/admin/users", label: "Usuários" },
     { href: "/admin/giveaways", label: "Sorteios" },
+    { href: "/admin/sorteio-chat", label: "Sorteio pelo chat" },
     { href: "/admin/tickets", label: "Tickets" },
     { href: "/admin/transactions", label: "Transações" },
     { href: "/admin/reconciliation", label: "Conferência de compras" },
@@ -982,6 +983,7 @@ async function loadAdminGiveaways() {
     const { data, error } = await supabase
         .from("giveaways")
         .select("id, title, status, starts_at, ends_at")
+        .eq("kind", "tickets")
         .order("starts_at", { ascending: false });
 
     if (error) throw error;
@@ -1656,6 +1658,10 @@ const TWITCH_CHAT_DISABLED = process.env.DISABLE_TWITCH_CHAT === "1";
 // Arena: duração do giro e tempo para o vencedor responder (contado a partir da revelação)
 const ARENA_SPIN_MS = 14000;
 const ARENA_RESPONSE_MS = 40000;
+// Sorteio pelo chat: comando de inscrição e limites do formulário
+const CHAT_GIVEAWAY_COMMAND = "!euquero";
+const CHAT_GIVEAWAY_MAX_MINUTES = 60;
+const CHAT_GIVEAWAY_MAX_WINNERS = 50;
 
 // Status da live (Helix GET /streams com token de aplicativo)
 const LIVE_CHANNEL_LOGIN = "joao_weird";
@@ -1840,6 +1846,7 @@ app.get("/", async (req, res) => {
             .from("giveaways")
             .select("id, title, description, starts_at, ends_at")
             .eq("status", "active")
+            .eq("kind", "tickets")
             .order("starts_at", { ascending: false })
             .limit(1)
             .maybeSingle(),
@@ -1847,6 +1854,7 @@ app.get("/", async (req, res) => {
             .from("giveaways")
             .select("id, title, description, starts_at, ends_at")
             .eq("status", "draft")
+            .eq("kind", "tickets")
             .gt("starts_at", now)
             .order("starts_at", { ascending: true })
             .limit(3),
@@ -4724,7 +4732,8 @@ app.get("/admin/users", requireAdmin, async (req, res) => {
             supabase
                 .from("giveaways")
                 .select("id")
-                .eq("status", "active"),
+                .eq("status", "active")
+                .eq("kind", "tickets"),
 
             getSubscriberIdsSafe(),
 
@@ -5389,6 +5398,7 @@ app.get("/admin/giveaways", requireAdmin, async (req, res) => {
     const { data: giveaways, error } = await supabase
         .from("giveaways")
         .select("*")
+        .eq("kind", "tickets")
         .order("created_at", { ascending: false });
 
     if (error) {
@@ -5490,6 +5500,7 @@ const giveawayRows = (giveaways || []).map(giveaway => `
             <a href="/admin">Início</a>
             <a href="/admin/users">Usuários</a>
             <a href="/admin/giveaways">Sorteios</a>
+            <a href="/admin/sorteio-chat">Sorteio pelo chat</a>
             <a href="/admin/tickets">Tickets</a>
             <a href="/admin/transactions">Transações</a>
             <a href="/admin/reconciliation">Conferência de compras</a>
@@ -5594,6 +5605,309 @@ const giveawayRows = (giveaways || []).map(giveaway => `
         </body>
         </html>
     `);
+});
+
+// ===== Sorteio pelo chat (!euquero): painel =====
+app.get("/admin/sorteio-chat", requireAdmin, async (req, res) => {
+    const csrfToken = getCsrfToken(req);
+
+    try {
+        const { data: giveaways, error } = await supabase
+            .from("giveaways")
+            .select("id, title, status, starts_at, ends_at, winners_count, created_at")
+            .eq("kind", "chat")
+            .order("created_at", { ascending: false })
+            .limit(30);
+
+        if (error) throw error;
+
+        const ids = (giveaways || []).map(giveaway => giveaway.id);
+        const entryCounts = new Map();
+        const confirmedCounts = new Map();
+        const drawnIds = new Set();
+
+        if (ids.length > 0) {
+            const [entriesResult, drawsResult] = await Promise.all([
+                fetchAllRows((from, to) => supabase
+                    .from("chat_giveaway_entries")
+                    .select("giveaway_id")
+                    .in("giveaway_id", ids)
+                    .order("created_at", { ascending: true })
+                    .range(from, to)),
+                supabase
+                    .from("giveaway_draws")
+                    .select("giveaway_id, status")
+                    .in("giveaway_id", ids)
+            ]);
+
+            if (drawsResult.error) throw drawsResult.error;
+
+            for (const row of entriesResult) {
+                entryCounts.set(row.giveaway_id, (entryCounts.get(row.giveaway_id) || 0) + 1);
+            }
+
+            for (const row of drawsResult.data || []) {
+                drawnIds.add(row.giveaway_id);
+
+                if (row.status === "confirmed") {
+                    confirmedCounts.set(row.giveaway_id, (confirmedCounts.get(row.giveaway_id) || 0) + 1);
+                }
+            }
+        }
+
+        const openGiveaway = (giveaways || []).find(giveaway => giveaway.status === "active");
+        const arenaButton = (id) => `
+            <button type="button" class="giveaway-action-button"
+                onclick="window.open('/arena/${encodeURIComponent(id)}', '_blank', 'width=950,height=750')">
+                Abrir Arena
+            </button>`;
+        const actionForm = (id, action, label) => `
+            <form class="giveaway-action-form" action="/admin/sorteio-chat/${encodeURIComponent(id)}/${action}" method="POST">
+                <input type="hidden" name="_csrf" value="${escapeDashboardHtml(csrfToken)}">
+                <button type="submit">${label}</button>
+            </form>`;
+
+        const statusText = {
+            active: "Inscrições abertas",
+            closed: "Pronto para girar",
+            cancelled: "Cancelado"
+        };
+
+        const rows = (giveaways || []).map(giveaway => {
+            const confirmed = confirmedCounts.get(giveaway.id) || 0;
+            const finished = giveaway.status === "closed" && confirmed >= giveaway.winners_count;
+            const hasDraws = drawnIds.has(giveaway.id);
+
+            return `
+                <tr>
+                    <td>${escapeDashboardHtml(giveaway.title)}</td>
+                    <td>${finished ? "Concluído" : escapeDashboardHtml(statusText[giveaway.status] || giveaway.status)}</td>
+                    <td>${adminNumber(entryCounts.get(giveaway.id) || 0)}</td>
+                    <td>${confirmed} de ${giveaway.winners_count}</td>
+                    <td>${adminDateTime(giveaway.ends_at)}</td>
+                    <td>
+                        <div class="giveaway-actions">
+                            ${giveaway.status !== "cancelled" ? arenaButton(giveaway.id) : ""}
+                            ${giveaway.status === "active" ? actionForm(giveaway.id, "encerrar", "Encerrar inscrições agora") : ""}
+                            ${["active", "closed"].includes(giveaway.status) && !hasDraws && !finished
+                                ? actionForm(giveaway.id, "cancelar", "Cancelar") : ""}
+                        </div>
+                    </td>
+                </tr>`;
+        }).join("");
+
+        const chatStatus = getTwitchChatStatus();
+        const chatWarning = chatStatus === "conectado" ? "" : `
+            <p style="background:#3a1f1a; border:1px solid #8b493d; border-radius:10px; padding:12px 16px; color:#f0c8b8; max-width:640px;">
+                ✖ O chat da Twitch não está conectado agora${chatStatus === "reconectando" ? " (reconectando...)" : ""}.
+                Sem ele ninguém consegue se inscrever com ${CHAT_GIVEAWAY_COMMAND}.
+                <a href="/admin/giveaways" style="color:#e2bd7b;">Conectar o canal</a>
+            </p>`;
+
+        const form = openGiveaway
+            ? `<p style="color:#c8baa4; max-width:640px; line-height:1.5;">
+                   Já existe um sorteio com inscrições abertas (<strong>${escapeDashboardHtml(openGiveaway.title)}</strong>).
+                   Encerre ou cancele antes de criar outro.
+               </p>`
+            : `
+            <form action="/admin/sorteio-chat" method="POST" class="giveaway-form">
+                <input type="hidden" name="_csrf" value="${escapeDashboardHtml(csrfToken)}">
+
+                <div class="giveaway-field">
+                    <label for="title">Prêmio / nome do sorteio</label>
+                    <input type="text" id="title" name="title" maxlength="${GIVEAWAY_TITLE_MAX}" placeholder="Ex: 10 dias de VIP" required>
+                </div>
+
+                <div class="giveaway-field">
+                    <label for="description">Descrição (opcional)</label>
+                    <textarea id="description" name="description" rows="2" maxlength="${GIVEAWAY_DESCRIPTION_MAX}"></textarea>
+                </div>
+
+                <div class="giveaway-field">
+                    <label for="minutes">Minutos para se inscrever</label>
+                    <input type="number" id="minutes" name="minutes" min="1" max="${CHAT_GIVEAWAY_MAX_MINUTES}" value="3" required>
+                </div>
+
+                <div class="giveaway-field">
+                    <label for="winners">Quantidade de ganhadores</label>
+                    <input type="number" id="winners" name="winners" min="1" max="${CHAT_GIVEAWAY_MAX_WINNERS}" value="1" required>
+                </div>
+
+                <button type="submit">Abrir inscrições agora</button>
+            </form>`;
+
+        return res.send(renderAdminPage({
+            title: "Sorteio pelo chat",
+            activePath: "/admin/sorteio-chat",
+            content: `
+                <h1>Sorteio pelo chat</h1>
+                <p style="color:#c8baa4; max-width:720px; line-height:1.6;">
+                    As inscrições abrem na hora. Quem digitar <strong>${CHAT_GIVEAWAY_COMMAND}</strong> no chat da live entra no sorteio
+                    (uma vez por pessoa, todos com a mesma chance, sem gastar pontos). Quando o tempo acabar, gire na Arena:
+                    o vencedor tem 40 segundos para responder no chat. Quem não responder sai e você gira de novo,
+                    até completar o número de ganhadores.
+                </p>
+                ${chatWarning}
+
+                <h2>Novo sorteio pelo chat</h2>
+                ${form}
+
+                <h2>Sorteios pelo chat</h2>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Prêmio</th>
+                            <th>Situação</th>
+                            <th>Inscritos</th>
+                            <th>Ganhadores</th>
+                            <th>Fim das inscrições</th>
+                            <th>Ações</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${rows || '<tr><td colspan="6">Nenhum sorteio pelo chat ainda.</td></tr>'}
+                    </tbody>
+                </table>
+            `
+        }));
+    } catch (error) {
+        console.error("Erro ao carregar sorteios pelo chat:", error.message);
+        return res.status(500).send("Não foi possível carregar os sorteios pelo chat.");
+    }
+});
+
+app.post("/admin/sorteio-chat", requireAdmin, requireCsrf, async (req, res) => {
+    const { title, description } = req.body;
+    const minutes = Number(req.body.minutes);
+    const winners = Number(req.body.winners);
+
+    if (typeof title !== "string" || !title.trim() || (description !== undefined && typeof description !== "string")) {
+        return res.status(400).send("Informe o prêmio do sorteio.");
+    }
+
+    if (title.trim().length > GIVEAWAY_TITLE_MAX || (description || "").trim().length > GIVEAWAY_DESCRIPTION_MAX) {
+        return res.status(400).send(
+            `O título pode ter até ${GIVEAWAY_TITLE_MAX} caracteres e a descrição até ${GIVEAWAY_DESCRIPTION_MAX}.`
+        );
+    }
+
+    if (!Number.isInteger(minutes) || minutes < 1 || minutes > CHAT_GIVEAWAY_MAX_MINUTES) {
+        return res.status(400).send(`O tempo de inscrição deve ser de 1 a ${CHAT_GIVEAWAY_MAX_MINUTES} minutos.`);
+    }
+
+    if (!Number.isInteger(winners) || winners < 1 || winners > CHAT_GIVEAWAY_MAX_WINNERS) {
+        return res.status(400).send(`A quantidade de ganhadores deve ser de 1 a ${CHAT_GIVEAWAY_MAX_WINNERS}.`);
+    }
+
+    try {
+        const { data: open, error: openError } = await supabase
+            .from("giveaways")
+            .select("id")
+            .eq("kind", "chat")
+            .eq("status", "active")
+            .limit(1);
+
+        if (openError) throw openError;
+
+        if (open && open.length > 0) {
+            return res.status(409).send("Já existe um sorteio pelo chat com inscrições abertas.");
+        }
+
+        const startsAt = new Date();
+        const endsAt = new Date(startsAt.getTime() + minutes * 60 * 1000);
+
+        const { data: created, error } = await supabase
+            .from("giveaways")
+            .insert({
+                title: title.trim(),
+                description: description?.trim() || null,
+                starts_at: startsAt.toISOString(),
+                ends_at: endsAt.toISOString(),
+                status: "active",
+                kind: "chat",
+                winners_count: winners
+            })
+            .select("id")
+            .single();
+
+        if (error) throw error;
+
+        invalidateOpenChatGiveaway();
+
+        await supabase.from("audit_logs").insert({
+            twitch_id: req.session.twitchUser.id,
+            action: "chat_giveaway_created",
+            details: { giveaway_id: created.id, minutes, winners }
+        });
+
+        return res.redirect("/admin/sorteio-chat");
+    } catch (error) {
+        console.error("Erro ao criar sorteio pelo chat:", error.message);
+        return res.status(500).send("Não foi possível criar o sorteio pelo chat.");
+    }
+});
+
+app.post("/admin/sorteio-chat/:id/encerrar", requireAdmin, requireCsrf, async (req, res) => {
+    const wantsJson = req.get("X-Requested-With") === "fetch";
+
+    try {
+        const { data, error } = await supabase
+            .from("giveaways")
+            .update({ status: "closed", ends_at: new Date().toISOString() })
+            .eq("id", req.params.id)
+            .eq("kind", "chat")
+            .eq("status", "active")
+            .select("id");
+
+        if (error) throw error;
+
+        invalidateOpenChatGiveaway();
+        invalidateArenaState(req.params.id);
+
+        if (wantsJson) {
+            return res.json({ ok: Boolean(data && data.length) });
+        }
+
+        return res.redirect("/admin/sorteio-chat");
+    } catch (error) {
+        console.error("Erro ao encerrar inscrições:", error.message);
+        return wantsJson
+            ? res.status(500).json({ ok: false, error: "Não foi possível encerrar as inscrições." })
+            : res.status(500).send("Não foi possível encerrar as inscrições.");
+    }
+});
+
+app.post("/admin/sorteio-chat/:id/cancelar", requireAdmin, requireCsrf, async (req, res) => {
+    try {
+        const { data: draws, error: drawsError } = await supabase
+            .from("giveaway_draws")
+            .select("id")
+            .eq("giveaway_id", req.params.id)
+            .limit(1);
+
+        if (drawsError) throw drawsError;
+
+        if (draws && draws.length > 0) {
+            return res.status(400).send("Este sorteio já teve giro e não pode ser cancelado.");
+        }
+
+        const { error } = await supabase
+            .from("giveaways")
+            .update({ status: "cancelled" })
+            .eq("id", req.params.id)
+            .eq("kind", "chat")
+            .in("status", ["active", "closed"]);
+
+        if (error) throw error;
+
+        invalidateOpenChatGiveaway();
+        invalidateArenaState(req.params.id);
+
+        return res.redirect("/admin/sorteio-chat");
+    } catch (error) {
+        console.error("Erro ao cancelar sorteio pelo chat:", error.message);
+        return res.status(500).send("Não foi possível cancelar o sorteio.");
+    }
 });
 
 async function getAllSubscribers(accessToken, broadcasterId) {
@@ -5790,13 +6104,17 @@ app.post("/admin/giveaways/:id/draw", requireAdmin, requireCsrf, async (req, res
         // Confirmar que o sorteio está encerrado
         const { data: giveaway, error: giveawayError } = await supabase
             .from("giveaways")
-            .select("id, status")
+            .select("id, status, kind, winners_count")
             .eq("id", giveawayId)
             .single();
 
         if (giveawayError || !giveaway || giveaway.status !== "closed") {
-            return fail(400, "O sorteio precisa estar encerrado para ser realizado.");
+            return fail(400, giveaway?.kind === "chat"
+                ? "Aguarde o fim das inscrições para girar."
+                : "O sorteio precisa estar encerrado para ser realizado.");
         }
+
+        const isChatGiveaway = giveaway.kind === "chat";
 
         // Não permitir nova rodada enquanto o vencedor atual ainda pode responder
         const { data: latestDraw, error: latestDrawError } = await supabase
@@ -5820,7 +6138,7 @@ app.post("/admin/giveaways/:id/draw", requireAdmin, requireCsrf, async (req, res
         // Buscar todos os vencedores das rodadas anteriores
 const { data: previousWinners, error: winnersError } = await supabase
     .from("giveaway_draws")
-    .select("winner_twitch_id")
+    .select("winner_twitch_id, status")
     .eq("giveaway_id", giveawayId);
 
 if (winnersError) throw winnersError;
@@ -5829,22 +6147,46 @@ const previousWinnerIds = new Set(
     (previousWinners || []).map(winner => winner.winner_twitch_id)
 );
 
-// Buscar todos os tickets, sem depender do limite padrão
+// Sorteio pelo chat: para quando todos os ganhadores confirmarem
+if (isChatGiveaway) {
+    const confirmedWinners = (previousWinners || []).filter(winner => winner.status === "confirmed").length;
+
+    if (confirmedWinners >= giveaway.winners_count) {
+        return fail(400, "Todos os ganhadores deste sorteio já foram confirmados.");
+    }
+}
+
+// Buscar todos os tickets (ou as inscrições do chat), sem depender do limite padrão
 let tickets = [];
 let from = 0;
 const batchSize = 1000;
+const chatEntriesById = new Map();
 
 while (true) {
-    const { data, error } = await supabase
-        .from("tickets")
-        .select("twitch_id, ticket_number")
-        .eq("giveaway_id", giveawayId)
-        .order("ticket_number", { ascending: true })
-        .range(from, from + batchSize - 1);
+    const { data, error } = isChatGiveaway
+        ? await supabase
+            .from("chat_giveaway_entries")
+            .select("twitch_id, entry_number, twitch_login, display_name, profile_image_url")
+            .eq("giveaway_id", giveawayId)
+            .order("entry_number", { ascending: true })
+            .range(from, from + batchSize - 1)
+        : await supabase
+            .from("tickets")
+            .select("twitch_id, ticket_number")
+            .eq("giveaway_id", giveawayId)
+            .order("ticket_number", { ascending: true })
+            .range(from, from + batchSize - 1);
 
     if (error) throw error;
 
-    tickets.push(...data);
+    if (isChatGiveaway) {
+        for (const entry of data) {
+            chatEntriesById.set(entry.twitch_id, entry);
+            tickets.push({ twitch_id: entry.twitch_id, ticket_number: entry.entry_number });
+        }
+    } else {
+        tickets.push(...data);
+    }
 
     if (data.length < batchSize) break;
 
@@ -5865,9 +6207,14 @@ if (tickets.length === 0) {
             return fail(503, "Conecte o canal da Twitch na página Sorteios do painel antes de sortear.");
         }
 
+        // Sorteio pelo chat: todos com a mesma chance (sem consultar inscritos)
+        let subscribers = new Set();
+        let subscriberMultiplier = 1;
+
+        if (!isChatGiveaway) {
         const accessToken = await getValidTwitchBroadcasterAccessToken();
 
-const subscribers = await getAllSubscribers(
+subscribers = await getAllSubscribers(
     accessToken,
     user.id
 );
@@ -5882,7 +6229,8 @@ if (settingsError || !settings) {
     throw new Error("Não foi possível carregar as configurações do sorteio.");
 }
 
-const subscriberMultiplier = Number(settings.subscriber_multiplier);
+subscriberMultiplier = Number(settings.subscriber_multiplier);
+        }
 
 if (
     !Number.isSafeInteger(subscriberMultiplier) ||
@@ -5927,6 +6275,23 @@ if (
 
         if (!winningTicket) {
             throw new Error("Não foi possível identificar o ticket vencedor.");
+        }
+
+        // O vencedor do chat pode nunca ter entrado no site: cadastrar só ele em "users"
+        // (as rodadas e as mensagens do chat exigem o cadastro). Não sobrescreve quem já existe.
+        if (isChatGiveaway) {
+            const entry = chatEntriesById.get(winningTicket.twitch_id);
+
+            const { error: winnerUserError } = await supabase
+                .from("users")
+                .upsert({
+                    twitch_id: winningTicket.twitch_id,
+                    twitch_login: entry?.twitch_login || entry?.display_name || winningTicket.twitch_id,
+                    display_name: entry?.display_name || entry?.twitch_login || null,
+                    profile_image_url: entry?.profile_image_url || null
+                }, { onConflict: "twitch_id", ignoreDuplicates: true });
+
+            if (winnerUserError) throw winnerUserError;
         }
 
         // Registrar o resultado atomicamente no Supabase
@@ -6025,6 +6390,7 @@ app.get("/giveaways", async (req, res) => {
             .from("giveaways")
             .select("id, title, description, starts_at, ends_at")
             .eq("status", "active")
+            .eq("kind", "tickets")
             .lte("starts_at", now)
             .gte("ends_at", now)
             .order("ends_at", { ascending: true });
@@ -6996,6 +7362,7 @@ async function handleTicketPurchase(req, res) {
             .select("id, title, status, starts_at, ends_at")
             .eq("id", req.params.id)
             .eq("status", "active")
+            .eq("kind", "tickets")
             .lte("starts_at", now)
             .gte("ends_at", now)
             .single();
@@ -7663,6 +8030,7 @@ app.get("/my-tickets", async (req, res) => {
                 .from("giveaways")
                 .select("id, title, status, ends_at")
                 .eq("status", "active")
+                .eq("kind", "tickets")
                 .order("ends_at", { ascending: true }),
             supabase
                 .from("transactions")
@@ -8312,7 +8680,7 @@ async function computeArenaState(giveawayId) {
 
         const { data: giveaway, error: giveawayError } = await supabase
             .from("giveaways")
-            .select("id, title, description, status, current_round, draw_in_progress")
+            .select("id, title, description, status, current_round, draw_in_progress, kind, winners_count, ends_at")
             .eq("id", giveawayId)
             .maybeSingle();
 
@@ -8320,20 +8688,38 @@ async function computeArenaState(giveawayId) {
             return null;
         }
 
-        // Todos os tickets do sorteio (paginado)
+        const isChatGiveaway = giveaway.kind === "chat";
+
+        // Todos os tickets do sorteio (paginado).
+        // No sorteio pelo chat, cada inscrição (!euquero) vale como um ticket.
         const tickets = [];
+        const chatEntryById = new Map();
 
         for (let from = 0; from < 1000000; from += 1000) {
-            const { data, error } = await supabase
-                .from("tickets")
-                .select("twitch_id, ticket_number")
-                .eq("giveaway_id", giveawayId)
-                .order("ticket_number", { ascending: true })
-                .range(from, from + 999);
+            const { data, error } = isChatGiveaway
+                ? await supabase
+                    .from("chat_giveaway_entries")
+                    .select("twitch_id, entry_number, twitch_login, display_name, profile_image_url")
+                    .eq("giveaway_id", giveawayId)
+                    .order("entry_number", { ascending: true })
+                    .range(from, from + 999)
+                : await supabase
+                    .from("tickets")
+                    .select("twitch_id, ticket_number")
+                    .eq("giveaway_id", giveawayId)
+                    .order("ticket_number", { ascending: true })
+                    .range(from, from + 999);
 
             if (error) throw error;
 
-            tickets.push(...(data || []));
+            if (isChatGiveaway) {
+                for (const entry of data || []) {
+                    chatEntryById.set(entry.twitch_id, entry);
+                    tickets.push({ twitch_id: entry.twitch_id, ticket_number: entry.entry_number });
+                }
+            } else {
+                tickets.push(...(data || []));
+            }
 
             if (!data || data.length < 1000) break;
         }
@@ -8358,7 +8744,10 @@ async function computeArenaState(giveawayId) {
         const currentDraw = draws.length > 0 ? draws[draws.length - 1] : null;
 
         const participantIds = [...new Set(tickets.map(ticket => ticket.twitch_id))];
-        const userIds = [...new Set([...participantIds, ...draws.map(draw => draw.winner_twitch_id)])];
+        // No chat, os dados de quem se inscreveu vêm da própria inscrição; só os vencedores estão em "users"
+        const userIds = isChatGiveaway
+            ? [...new Set(draws.map(draw => draw.winner_twitch_id))]
+            : [...new Set([...participantIds, ...draws.map(draw => draw.winner_twitch_id)])];
 
         let users = [];
 
@@ -8374,7 +8763,21 @@ async function computeArenaState(giveawayId) {
         }
 
         const userById = new Map(users.map(user => [user.twitch_id, user]));
-        const participants = participantIds.map(id => userById.get(id) || { twitch_id: id, display_name: "Participante" });
+
+        for (const [twitchId, entry] of chatEntryById) {
+            const known = userById.get(twitchId);
+            userById.set(twitchId, {
+                twitch_id: twitchId,
+                twitch_login: entry.twitch_login || known?.twitch_login,
+                display_name: entry.display_name || known?.display_name,
+                profile_image_url: entry.profile_image_url || known?.profile_image_url || ""
+            });
+        }
+        const participants = participantIds.map(id => {
+            const participant = userById.get(id) || { twitch_id: id, display_name: "Participante" };
+            const entry = chatEntryById.get(id);
+            return entry ? { ...participant, entry_number: entry.entry_number } : participant;
+        });
         const nameOf = (user) => user?.display_name || user?.twitch_login || "Participante";
 
         // Tickets para a animação: exclui quem venceu rodadas anteriores (o vencedor atual continua)
@@ -8424,8 +8827,13 @@ async function computeArenaState(giveawayId) {
                 id: giveaway.id,
                 title: giveaway.title,
                 description: giveaway.description,
-                status: giveaway.status
+                status: giveaway.status,
+                kind: giveaway.kind,
+                winnersCount: giveaway.winners_count,
+                endsAt: giveaway.ends_at
             },
+            chatCommand: CHAT_GIVEAWAY_COMMAND,
+            confirmedWinners: draws.filter(draw => draw.status === "confirmed").length,
             currentDraw,
             winner: winnerUser
                 ? {
@@ -8512,13 +8920,22 @@ app.get("/arena/:id", async (req, res) => {
 
     const { data: giveaway, error } = await supabase
         .from("giveaways")
-        .select("id, title")
+        .select("id, title, kind")
         .eq("id", giveawayId)
         .maybeSingle();
 
     if (error || !giveaway) {
         return res.status(404).send("Sorteio não encontrado.");
     }
+
+    const isChatGiveaway = giveaway.kind === "chat";
+
+    // Sorteio pelo chat: a lista de inscritos fica logo abaixo do giro (lado a lado, compacta)
+    const participantsPanel = `
+                <section class="panel${isChatGiveaway ? " chat-entries-panel" : ""}">
+                    <h2>${isChatGiveaway ? `INSCRITOS · digite <strong>${escapeDashboardHtml(CHAT_GIVEAWAY_COMMAND)}</strong> no chat` : "Participantes do sorteio"}</h2>
+                    <div id="participantsList">Carregando participantes...</div>
+                </section>`;
 
     const sessionUser = req.session && req.session.twitchUser;
     const isAdmin = Boolean(
@@ -8543,6 +8960,7 @@ app.get("/arena/:id", async (req, res) => {
             data-admin="${isAdmin ? "1" : "0"}"
             data-csrf="${escapeDashboardHtml(csrfToken)}"
             data-spin-ms="${ARENA_SPIN_MS}"
+            data-kind="${isChatGiveaway ? "chat" : "tickets"}"
         >
             <header class="arena-header">
                 <h1>ARENA DO TESOURO</h1>
@@ -8556,9 +8974,9 @@ app.get("/arena/:id", async (req, res) => {
                     <section class="arena-box">
                         <h2>PARTICIPANTES</h2>
                         <div class="participant-total" id="arenaParticipantCount">0</div>
-                        <div class="participant-total-label">USUÁRIOS PARTICIPANDO</div>
+                        <div class="participant-total-label">${isChatGiveaway ? "INSCRITOS PELO CHAT" : "USUÁRIOS PARTICIPANDO"}</div>
                         <div class="participant-tickets">
-                            TICKETS
+                            ${isChatGiveaway ? "GANHADORES" : "TICKETS"}
                             <strong id="arenaTicketCount">0</strong>
                         </div>
                     </section>
@@ -8566,6 +8984,13 @@ app.get("/arena/:id", async (req, res) => {
                     <!-- ABERTURA DO TESOURO -->
                     <section class="arena-box case-opening">
                         <h2>ABERTURA DO TESOURO</h2>
+
+                        <div class="signup-banner" id="signupBanner" hidden>
+                            <div class="signup-call">DIGITE NO CHAT</div>
+                            <div class="signup-command">${escapeDashboardHtml(CHAT_GIVEAWAY_COMMAND)}</div>
+                            <div class="signup-timer" id="signupTimer">--:--</div>
+                            <div class="signup-note">para as inscrições encerrarem</div>
+                        </div>
 
                         <div class="case-window" id="caseWindow">
                             <div class="case-pointer"></div>
@@ -8584,6 +9009,8 @@ app.get("/arena/:id", async (req, res) => {
                     </section>
                 </div>
 
+                ${isChatGiveaway ? participantsPanel : ""}
+
                 <!-- VENCEDORES DESTE SORTEIO -->
                 <section class="arena-box winners-box">
                     <div class="winners-box-header">
@@ -8591,6 +9018,7 @@ app.get("/arena/:id", async (req, res) => {
                         ${isAdmin ? `
                             <div class="draw-controls">
                                 <span class="draw-hint" id="drawHint"></span>
+                                ${isChatGiveaway ? `<button type="button" class="draw-button draw-button-secondary" id="closeSignupButton" hidden>ENCERRAR INSCRIÇÕES</button>` : ""}
                                 <button type="button" class="draw-button" id="drawButton" disabled>✦ INICIAR GIRO ✦</button>
                             </div>
                         ` : ""}
@@ -8598,6 +9026,7 @@ app.get("/arena/:id", async (req, res) => {
                     <div class="winners-list" id="winnersList"></div>
                 </section>
 
+                ${isChatGiveaway ? "" : `
                 <section class="panel">
                     <h2>Informações do sorteio</h2>
                     <div class="info-row">
@@ -8606,11 +9035,7 @@ app.get("/arena/:id", async (req, res) => {
                         <div>Multiplicador de inscritos: <strong><span id="subscriberMultiplier">1</span>x</strong></div>
                     </div>
                 </section>
-
-                <section class="panel">
-                    <h2>Participantes do sorteio</h2>
-                    <div id="participantsList">Carregando participantes...</div>
-                </section>
+                ${participantsPanel}`}
             </main>
 
             <canvas id="fireworks" aria-hidden="true"></canvas>
@@ -8630,6 +9055,140 @@ app.get("/arena/:id", async (req, res) => {
         </html>
     `);
 });
+
+// ===== Sorteio pelo chat (!euquero) =====
+
+// Sorteio pelo chat com inscrições abertas (cache curto: o chat pode mandar muitas mensagens)
+let openChatGiveawayCache = { id: null, at: 0 };
+
+async function getOpenChatGiveawayId() {
+    if (Date.now() - openChatGiveawayCache.at < 2000) {
+        return openChatGiveawayCache.id;
+    }
+
+    const { data, error } = await supabase
+        .from("giveaways")
+        .select("id")
+        .eq("kind", "chat")
+        .eq("status", "active")
+        .gt("ends_at", new Date().toISOString())
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+    if (error) throw error;
+
+    openChatGiveawayCache = { id: data?.id || null, at: Date.now() };
+    return openChatGiveawayCache.id;
+}
+
+function invalidateOpenChatGiveaway() {
+    openChatGiveawayCache = { id: null, at: 0 };
+}
+
+function isChatGiveawayCommand(text) {
+    const firstWord = String(text || "").trim().split(/\s+/)[0].toLowerCase();
+    return firstWord === CHAT_GIVEAWAY_COMMAND;
+}
+
+// Fotos de perfil: juntamos as inscrições e buscamos até 100 de uma vez na Twitch
+const pendingChatAvatarIds = new Set();
+let chatAvatarTimer = null;
+
+function queueChatAvatar(twitchId) {
+    pendingChatAvatarIds.add(twitchId);
+
+    if (!chatAvatarTimer) {
+        chatAvatarTimer = setTimeout(flushChatAvatars, 2000);
+    }
+}
+
+async function flushChatAvatars() {
+    chatAvatarTimer = null;
+    const ids = [...pendingChatAvatarIds].slice(0, 100);
+    ids.forEach(id => pendingChatAvatarIds.delete(id));
+
+    if (pendingChatAvatarIds.size > 0) {
+        chatAvatarTimer = setTimeout(flushChatAvatars, 2000);
+    }
+
+    if (ids.length === 0) return;
+
+    try {
+        const query = ids.map(id => "id=" + encodeURIComponent(id)).join("&");
+        const data = await twitchHelixGet(`users?${query}`);
+
+        for (const twitchUser of data?.data || []) {
+            if (!twitchUser.profile_image_url) continue;
+
+            const { error } = await supabase
+                .from("chat_giveaway_entries")
+                .update({ profile_image_url: twitchUser.profile_image_url })
+                .eq("twitch_id", twitchUser.id)
+                .is("profile_image_url", null);
+
+            if (error) console.error("Erro ao salvar foto do inscrito:", error.message);
+        }
+    } catch (error) {
+        console.error("Não foi possível buscar as fotos dos inscritos:", error.message);
+    }
+}
+
+async function handleChatGiveawayCommand(chatMessage) {
+    if (!isChatGiveawayCommand(chatMessage.message?.text)) return;
+
+    try {
+        const giveawayId = await getOpenChatGiveawayId();
+        if (!giveawayId) return;
+
+        const { data: entryNumber, error } = await supabase.rpc("join_chat_giveaway", {
+            p_giveaway_id: giveawayId,
+            p_twitch_id: chatMessage.chatter_user_id,
+            p_twitch_login: chatMessage.chatter_user_login || null,
+            p_display_name: chatMessage.chatter_user_name || chatMessage.chatter_user_login || null
+        });
+
+        if (error) throw error;
+        if (entryNumber === null || entryNumber === undefined) return;
+
+        invalidateArenaState(giveawayId);
+        queueChatAvatar(chatMessage.chatter_user_id);
+    } catch (error) {
+        console.error("Erro ao inscrever no sorteio pelo chat:", error.message);
+    }
+}
+
+// Encerra as inscrições do sorteio pelo chat no horário exato (o agendador geral roda a cada 15s)
+let chatGiveawayCloseRunning = false;
+
+async function closeExpiredChatGiveaways() {
+    if (chatGiveawayCloseRunning) return;
+    chatGiveawayCloseRunning = true;
+
+    try {
+        const { data, error } = await supabase
+            .from("giveaways")
+            .update({ status: "closed" })
+            .eq("kind", "chat")
+            .eq("status", "active")
+            .lte("ends_at", new Date().toISOString())
+            .select("id");
+
+        if (error) throw error;
+
+        for (const row of data || []) {
+            invalidateArenaState(row.id);
+            invalidateOpenChatGiveaway();
+            console.log("Inscrições do sorteio pelo chat encerradas.");
+        }
+    } catch (error) {
+        console.error("Erro ao encerrar inscrições do chat:", error.message);
+    } finally {
+        chatGiveawayCloseRunning = false;
+    }
+}
+
+setInterval(closeExpiredChatGiveaways, 2000);
 
 async function connectTwitchChat(
     accessToken,
@@ -8754,6 +9313,9 @@ if (
 ) {
     return;
 }
+
+// Inscrição no sorteio pelo chat (a mensagem segue também para a confirmação de vencedor)
+await handleChatGiveawayCommand(chatMessage);
 
 const now = new Date().toISOString();
 
@@ -9400,12 +9962,14 @@ app.get("/chat/sorteio", async (req, res) => {
                 .from("giveaways")
                 .select("title, ends_at")
                 .eq("status", "active")
+                .eq("kind", "tickets")
                 .order("ends_at", { ascending: true })
                 .limit(3),
             supabase
                 .from("giveaways")
                 .select("title, starts_at")
                 .eq("status", "draft")
+                .eq("kind", "tickets")
                 .gt("starts_at", nowIso)
                 .order("starts_at", { ascending: true })
                 .limit(1)
