@@ -174,11 +174,12 @@
     //  crawl   – desacelera bem devagar até parar
     //  stays   – vai se arrastando até a borda e quase passa para o próximo, mas fica
     //  creeps  – parece que vai parar antes, e entra no vencedor por poucos pixels
-    //  back    – passa um pouquinho para o próximo e volta para o vencedor
+    // O movimento é sempre só para frente: o ponteiro nunca passa do vencedor e volta,
+    // para não parecer que o resultado foi trocado no fim.
     function buildPlan(draw, pool, winnerTicket) {
         const rng = mulberry32(seedFrom(String(draw.id)));
         const roll = rng();
-        const variant = roll < 0.3 ? "crawl" : roll < 0.55 ? "stays" : roll < 0.8 ? "creeps" : "back";
+        const variant = roll < 0.35 ? "crawl" : roll < 0.65 ? "stays" : "creeps";
 
         const count = 96;
         const winnerIndex = 66 + Math.floor(rng() * 8);
@@ -219,7 +220,7 @@
     // Movimento: fase principal (desaceleração contínua) + fase de drama, com a velocidade
     // contínua na emenda. Duração total fixa (SPIN_MS) para bater com o prazo do servidor.
     function buildMotion(plan, geometry) {
-        const { cardWidth, gap, stride } = geometry;
+        const { cardWidth, stride } = geometry;
         const r = plan.r;
         const winnerStart = plan.winnerIndex * stride;
         const s0 = (2 + r[0] * 0.8) * stride;
@@ -228,32 +229,23 @@
         let p2;
         let d2;
         let finalOffset;
-        let forwardEnd;
-        let pauseMs = 0;
-        let backMs = 0;
 
         if (plan.variant === "crawl") {
             T2 = 3300; p2 = 2; d2 = 1.45 * stride;
             finalOffset = (0.25 + r[1] * 0.5) * cardWidth;
-            forwardEnd = winnerStart + finalOffset;
         } else if (plan.variant === "stays") {
             T2 = 4300; p2 = 2; d2 = 1.15 * stride;
             finalOffset = (0.93 + r[1] * 0.045) * cardWidth;
-            forwardEnd = winnerStart + finalOffset;
-        } else if (plan.variant === "creeps") {
+        } else {
             T2 = 4600; p2 = 3; d2 = 1.35 * stride;
             finalOffset = 2 + r[1] * 3;
-            forwardEnd = winnerStart + finalOffset;
-        } else {
-            T2 = 2900; p2 = 2; d2 = 1.3 * stride;
-            pauseMs = 500; backMs = 750;
-            finalOffset = (0.84 + r[1] * 0.08) * cardWidth;
-            forwardEnd = winnerStart + cardWidth + gap + 5 + r[2] * 8;
         }
 
+        // Para sempre dentro do card vencedor, sem nunca encostar no próximo
+        finalOffset = Math.min(finalOffset, cardWidth - 2);
         const finalPosition = winnerStart + finalOffset;
-        const T1 = SPIN_MS - T2 - pauseMs - backMs;
-        const D1 = forwardEnd - d2 - s0;
+        const T1 = SPIN_MS - T2;
+        const D1 = finalPosition - d2 - s0;
         const p1 = 3;
         const v0 = (p2 + 1) * d2 / T2;
         const vmax = Math.max(v0, (D1 / T1 - v0) * (p1 + 1) + v0);
@@ -269,16 +261,7 @@
             }
             if (t < T1 + T2) {
                 const w = (t - T1) / T2;
-                return junction + dramaCoef * (1 - Math.pow(1 - w, p2 + 1));
-            }
-            if (backMs > 0) {
-                const afterPause = t - T1 - T2 - pauseMs;
-                if (afterPause <= 0) return forwardEnd;
-                if (afterPause < backMs) {
-                    const k = afterPause / backMs;
-                    const eased = k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2;
-                    return forwardEnd + (finalPosition - forwardEnd) * eased;
-                }
+                return Math.min(finalPosition, junction + dramaCoef * (1 - Math.pow(1 - w, p2 + 1)));
             }
             return finalPosition;
         }
