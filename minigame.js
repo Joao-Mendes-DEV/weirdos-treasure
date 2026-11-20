@@ -398,3 +398,4 @@ module.exports = function registerMinigame(app, deps) {
 };
 
 module.exports.evaluateGuess = evaluateGuess;
+module.exports.POINTS_BY_ATTEMPT = POINTS_BY_ATTEMPT;

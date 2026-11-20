@@ -746,7 +746,7 @@
         let hint = "";
         let disabled = true;
 
-        const allWinnersConfirmed = IS_CHAT && data.confirmedWinners >= data.giveaway.winnersCount;
+        const allWinnersConfirmed = data.confirmedWinners >= data.giveaway.winnersCount;
 
         if (els.closeSignupButton) {
             els.closeSignupButton.hidden = data.giveaway.status !== "active";
@@ -765,6 +765,8 @@
             hint = "Aguardando resposta do vencedor (" + secondsLeft(draw) + "s)";
         } else if (allWinnersConfirmed) {
             hint = "Todos os ganhadores confirmados!";
+        } else if (data.finished) {
+            hint = "Sorteio finalizado.";
         } else if (data.eligibleParticipantsLeft === 0) {
             hint = "Todos os participantes já foram sorteados.";
         } else {
@@ -774,7 +776,7 @@
 
         els.drawButton.disabled = disabled;
         els.drawButton.textContent = (data.draws && data.draws.length > 0)
-            ? (IS_CHAT && data.confirmedWinners > 0 && !allWinnersConfirmed ? "✦ PRÓXIMO GANHADOR ✦" : "✦ SORTEAR NOVAMENTE ✦")
+            ? (data.confirmedWinners > 0 && !allWinnersConfirmed ? "✦ PRÓXIMO GANHADOR ✦" : "✦ SORTEAR NOVAMENTE ✦")
             : "✦ INICIAR GIRO ✦";
         els.drawHint.textContent = hint;
         els.drawHint.classList.toggle("is-error", !disabled && Boolean(drawError));
@@ -811,7 +813,9 @@
 
     function render(data) {
         els.title.textContent = data.giveaway.title;
-        els.meta.textContent = (IS_CHAT ? CHAT_STATUS_TEXT : STATUS_TEXT)[data.giveaway.status] || "";
+        els.meta.textContent = data.finished
+            ? "SORTEIO FINALIZADO"
+            : (IS_CHAT ? CHAT_STATUS_TEXT : STATUS_TEXT)[data.giveaway.status] || "";
         els.meta.classList.toggle("is-active", data.giveaway.status === "active");
 
         els.participantCount.textContent = data.totalParticipants;

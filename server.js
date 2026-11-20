@@ -15,6 +15,7 @@ const {
     SESSION_TTL_MS
 } = require("./security");
 const registerMinigame = require("./minigame");
+const MINIGAME_POINTS_BY_ATTEMPT = registerMinigame.POINTS_BY_ATTEMPT;
 
 validateEnvironment();
 
@@ -537,7 +538,6 @@ function publicSidebarHtml(req, activePath) {
             { href: "/", label: "Início" },
             { href: "/dashboard", label: "Minha conta" },
             { href: "/giveaways", label: "Sorteios" },
-            { href: "/my-tickets", label: "Meus tickets" },
             { href: "/minigame", label: "Minigame diário" },
             { href: "/regras", label: "Regras" },
             ...(isAdmin ? [{ href: "/admin", label: "Painel administrativo" }] : [])
@@ -779,16 +779,19 @@ const ADMIN_NAV_LINKS = [
     { href: "/admin/users", label: "Usuários" },
     { href: "/admin/giveaways", label: "Sorteios" },
     { href: "/admin/sorteio-chat", label: "Sorteio pelo chat" },
-    { href: "/admin/tickets", label: "Tickets" },
-    { href: "/admin/transactions", label: "Transações" },
+    { href: "/admin/tickets", label: "Tickets e compras" },
     { href: "/admin/reconciliation", label: "Conferência de compras" },
     { href: "/admin/settings", label: "Configurações" }
 ];
 
-function adminSidebarHtml(activePath) {
-    const links = ADMIN_NAV_LINKS.map(link => `
+function adminNavLinksHtml(activePath) {
+    return ADMIN_NAV_LINKS.map(link => `
         <a href="${link.href}"${link.href === activePath ? ' class="active" aria-current="page"' : ""}>${link.label}</a>
     `).join("");
+}
+
+function adminSidebarHtml(activePath) {
+    const links = adminNavLinksHtml(activePath);
 
     return `
         <aside class="sidebar">
@@ -832,7 +835,8 @@ const GIVEAWAY_STATUS_LABELS = {
     draft: "Agendado",
     active: "Ativo",
     closed: "Encerrado",
-    cancelled: "Cancelado"
+    cancelled: "Cancelado",
+    finished: "Finalizado"
 };
 
 const TRANSACTION_STATUS_LABELS = {
@@ -914,6 +918,126 @@ function adminSubBadge(subscriberIds, twitchId) {
         : `<span class="badge badge-muted">Não</span>`;
 }
 
+// ===== Vencedores dos sorteios (abas Sorteios e Sorteio pelo chat) =====
+
+// Rodadas e nomes dos vencedores de vários sorteios de uma vez
+async function loadGiveawayDrawsInfo(giveawayIds) {
+    const drawsByGiveaway = new Map();
+    const namesById = new Map();
+
+    if (!giveawayIds.length) return { drawsByGiveaway, namesById };
+
+    const { data: draws, error } = await supabase
+        .from("giveaway_draws")
+        .select("giveaway_id, round_number, winner_twitch_id, winning_ticket_number, status, drawn_at, response_deadline_at")
+        .in("giveaway_id", giveawayIds)
+        .order("round_number", { ascending: true });
+
+    if (error) throw error;
+
+    for (const draw of draws || []) {
+        if (!drawsByGiveaway.has(draw.giveaway_id)) drawsByGiveaway.set(draw.giveaway_id, []);
+        drawsByGiveaway.get(draw.giveaway_id).push(draw);
+    }
+
+    const winnerIds = [...new Set((draws || []).map(draw => draw.winner_twitch_id))];
+
+    if (winnerIds.length) {
+        const { data: users, error: usersError } = await supabase
+            .from("users")
+            .select("twitch_id, twitch_login, display_name, profile_image_url")
+            .in("twitch_id", winnerIds);
+
+        if (usersError) throw usersError;
+
+        for (const user of users || []) namesById.set(user.twitch_id, user);
+    }
+
+    return { drawsByGiveaway, namesById };
+}
+
+function confirmedDrawCount(draws) {
+    return (draws || []).filter(draw => draw.status === "confirmed").length;
+}
+
+// Há uma rodada cujo vencedor ainda pode responder no chat
+function hasPendingDraw(draws) {
+    return (draws || []).some(draw =>
+        draw.status === "awaiting_response" &&
+        new Date(draw.response_deadline_at).getTime() > Date.now()
+    );
+}
+
+// Linha escondida abaixo do sorteio com os vencedores (aberta pelo botão "Ver vencedores")
+function adminWinnersRowHtml({ giveaway, draws, usersById, colspan }) {
+    const isChat = giveaway.kind === "chat";
+    const confirmed = (draws || []).filter(draw => draw.status === "confirmed");
+    const others = (draws || []).filter(draw => draw.status !== "confirmed");
+
+    const item = (draw) => {
+        const user = usersById.get(draw.winner_twitch_id);
+
+        return `
+            <li class="${draw.status === "confirmed" ? "is-confirmed" : ""}">
+                ${adminAvatarHtml(user)}
+                <a href="/admin/users/${encodeURIComponent(draw.winner_twitch_id)}"><strong>${escapeDashboardHtml(adminUserName(user))}</strong></a>
+                <span>${isChat ? "Inscrição" : "Ticket"} #${escapeDashboardHtml(draw.winning_ticket_number)}</span>
+                <span>Rodada ${escapeDashboardHtml(draw.round_number)} · ${adminDateTime(draw.drawn_at)}</span>
+                ${draw.status === "confirmed" ? `<span class="badge badge-winner">🏆 Ganhador</span>` : adminBadge(draw.status, DRAW_STATUS_LABELS)}
+            </li>
+        `;
+    };
+
+    const body = !(draws || []).length
+        ? `<p class="muted-note">Nenhum giro feito neste sorteio.</p>`
+        : `
+            <h3>Ganhadores confirmados (${confirmed.length} de ${escapeDashboardHtml(giveaway.winners_count || 1)})</h3>
+            ${confirmed.length
+                ? `<ol class="winners-list">${confirmed.map(item).join("")}</ol>`
+                : `<p class="muted-note">Nenhum ganhador confirmou ainda.</p>`}
+            ${others.length ? `
+                <h3>Sorteados que não confirmaram</h3>
+                <ul class="winners-list is-muted">${others.map(item).join("")}</ul>
+            ` : ""}
+        `;
+
+    return `
+        <tr class="winners-row" id="vencedores-${escapeDashboardHtml(giveaway.id)}" hidden>
+            <td colspan="${colspan}">
+                <div class="winners-panel">${body}</div>
+            </td>
+        </tr>
+    `;
+}
+
+function adminWinnersButtonHtml(giveawayId) {
+    return `
+        <button type="button" class="giveaway-action-secondary" data-winners-toggle="vencedores-${escapeDashboardHtml(giveawayId)}" aria-expanded="false">
+            Ver vencedores
+        </button>
+    `;
+}
+
+// Abre/fecha a linha de vencedores e pede confirmação nos botões perigosos
+const ADMIN_GIVEAWAY_LIST_SCRIPT = `
+    document.querySelectorAll("[data-winners-toggle]").forEach(function (button) {
+        var row = document.getElementById(button.dataset.winnersToggle);
+        if (!row) return;
+
+        button.addEventListener("click", function () {
+            row.hidden = !row.hidden;
+            button.setAttribute("aria-expanded", row.hidden ? "false" : "true");
+            button.textContent = row.hidden ? "Ver vencedores" : "Esconder vencedores";
+        });
+    });
+
+    document.querySelectorAll("form[data-confirm]").forEach(function (form) {
+        form.addEventListener("submit", function (event) {
+            if (!window.confirm(form.dataset.confirm)) event.preventDefault();
+        });
+    });
+`;
+
 // Script de busca nas tabelas (campo com data-filter-table="id-da-tabela")
 const ADMIN_TABLE_SCRIPT = `
     document.querySelectorAll("[data-filter-table]").forEach(function (input) {
@@ -989,23 +1113,6 @@ async function loadAdminGiveaways() {
     if (error) throw error;
 
     return data || [];
-}
-
-// Sem escolha explícita: o sorteio ativo; senão o último encerrado; senão o mais recente
-function pickAdminGiveaway(giveaways, requestedId) {
-    if (typeof requestedId === "string") {
-        const requested = giveaways.find(giveaway => giveaway.id === requestedId);
-        if (requested) return requested;
-    }
-
-    const lastClosed = giveaways
-        .filter(giveaway => giveaway.status === "closed")
-        .sort((a, b) => new Date(b.ends_at) - new Date(a.ends_at))[0];
-
-    return giveaways.find(giveaway => giveaway.status === "active")
-        || lastClosed
-        || giveaways[0]
-        || null;
 }
 
 function addDaysToKey(key, amount) {
@@ -1140,7 +1247,8 @@ function buildGiveawayBrowserHtml({ giveaways, selected, showAll, monthParam, ba
                 <form method="GET" action="${basePath}" class="giveaway-select-form">
                     <label for="giveaway-select">Ir para o sorteio</label>
                     <div class="giveaway-select-row">
-                        <select id="giveaway-select" name="sorteio" onchange="this.form.submit()">
+                        <select id="giveaway-select" name="sorteio" onchange="if (this.value) this.form.submit()">
+                            ${!showAll && !selected ? `<option value="" selected disabled>Escolha um sorteio...</option>` : ""}
                             <option value="todos"${showAll ? " selected" : ""}>Todos os sorteios</option>
                             ${options}
                         </select>
@@ -1167,11 +1275,6 @@ function computeGiveawayStats(tickets, transactions) {
 }
 
 function buildGiveawaySummaryHtml({ giveaway, showAll, stats, draws, namesById, basePath }) {
-    const otherPage = basePath === "/admin/tickets"
-        ? { href: "/admin/transactions", label: "Ver transações deste sorteio" }
-        : { href: "/admin/tickets", label: "Ver tickets deste sorteio" };
-    const param = showAll ? "todos" : giveaway?.id;
-
     const winners = (draws || []).length
         ? `
             <div class="summary-winners">
@@ -1210,7 +1313,7 @@ function buildGiveawaySummaryHtml({ giveaway, showAll, stats, draws, namesById, 
 
             ${winners}
 
-            <a class="summary-link" href="${otherPage.href}?sorteio=${encodeURIComponent(param || "")}">${otherPage.label} →</a>
+            <a class="summary-link" href="${basePath}">← Fechar e voltar ao calendário</a>
         </section>
     `;
 }
@@ -1355,7 +1458,7 @@ function renderGiveawayBars({ title, unit, items }) {
     return `<article class="chart-card">${header}<div class="hbar-list">${rows}</div></article>`;
 }
 
-function buildAdminInsightsHtml({ users, tickets, transactions, giveaways, draws }) {
+function buildAdminInsightsHtml({ users, tickets, transactions, giveaways, draws, games = [] }) {
     const namesById = new Map(users.map(user => [user.twitch_id, adminUserName(user)]));
 
     // Agregados por sorteio
@@ -1498,6 +1601,8 @@ function buildAdminInsightsHtml({ users, tickets, transactions, giveaways, draws
         </div>
     `;
 
+    const minigamePanel = buildMinigameInsightsPanel(games, dailyViews);
+
     return `
         <section class="insights" id="insights" hidden>
             <button type="button" class="insights-close" data-insights-close aria-label="Fechar gráfico">Fechar ✕</button>
@@ -1505,7 +1610,172 @@ function buildAdminInsightsHtml({ users, tickets, transactions, giveaways, draws
             ${giveawaysPanel}
             ${ticketsPanel}
             ${pointsPanel}
+            ${minigamePanel}
         </section>
+    `;
+}
+
+// Resumo do minigame diário: totais, partidas por dia, acertos por tentativa e tabela por usuário
+function summarizeMinigame(games) {
+    const finished = games.filter(game => game.status !== "playing");
+    const won = games.filter(game => game.status === "won");
+
+    return {
+        total: games.length,
+        players: new Set(games.map(game => game.twitch_id)).size,
+        won: won.length,
+        lost: games.filter(game => game.status === "lost").length,
+        abandoned: games.filter(game => game.status === "abandoned").length,
+        playing: games.length - finished.length,
+        points: won.reduce((sum, game) => sum + (Number(game.points_awarded) || 0), 0),
+        creditProblems: games.filter(game => game.credit_status === "failed" || game.credit_status === "pending").length,
+        winRate: finished.length ? won.length / finished.length : 0
+    };
+}
+
+function buildMinigameInsightsPanel(games, dailyViews) {
+    const percent = (value) => `${(value * 100).toLocaleString("pt-BR", { maximumFractionDigits: 1 })}%`;
+    const summary = summarizeMinigame(games);
+
+    // Por usuário
+    const perUser = new Map();
+
+    for (const game of games) {
+        const entry = perUser.get(game.twitch_id) || {
+            user: game.users,
+            total: 0, won: 0, lost: 0, abandoned: 0, points: 0,
+            attemptsOnWins: 0, best: null, last: null
+        };
+
+        entry.total++;
+
+        if (game.status === "won") {
+            const attempts = Number(game.attempts) || 0;
+            entry.won++;
+            entry.points += Number(game.points_awarded) || 0;
+            entry.attemptsOnWins += attempts;
+            if (attempts && (entry.best === null || attempts < entry.best)) entry.best = attempts;
+        } else if (game.status === "lost") {
+            entry.lost++;
+        } else if (game.status === "abandoned") {
+            entry.abandoned++;
+        }
+
+        if (!entry.last || game.started_at > entry.last) entry.last = game.started_at;
+        perUser.set(game.twitch_id, entry);
+    }
+
+    const userRows = [...perUser.entries()]
+        .sort((a, b) => b[1].points - a[1].points || b[1].total - a[1].total)
+        .map(([twitchId, entry]) => {
+            const finished = entry.won + entry.lost + entry.abandoned;
+            const rate = finished ? entry.won / finished : 0;
+            const average = entry.won ? entry.attemptsOnWins / entry.won : 0;
+            const name = adminUserName(entry.user);
+
+            return `
+                <tr>
+                    <td data-value="${escapeDashboardHtml(name)}"><a href="/admin/users/${encodeURIComponent(twitchId)}">${escapeDashboardHtml(name)}</a></td>
+                    <td data-value="${entry.total}">${adminNumber(entry.total)}</td>
+                    <td data-value="${entry.won}">${adminNumber(entry.won)}</td>
+                    <td data-value="${entry.lost}">${adminNumber(entry.lost)}</td>
+                    <td data-value="${entry.abandoned}">${adminNumber(entry.abandoned)}</td>
+                    <td data-value="${rate}">${finished ? percent(rate) : "-"}</td>
+                    <td data-value="${average}">${entry.won ? average.toLocaleString("pt-BR", { maximumFractionDigits: 1 }) : "-"}</td>
+                    <td data-value="${entry.best || 99}">${entry.best ? `${entry.best}ª` : "-"}</td>
+                    <td data-value="${entry.points}">${adminNumber(entry.points)}</td>
+                    <td data-value="${escapeDashboardHtml(entry.last || "")}">${adminDateTime(entry.last)}</td>
+                </tr>
+            `;
+        }).join("");
+
+    // Em qual tentativa as pessoas acertam
+    const byAttempt = [1, 2, 3, 4, 5, 6].map(attempt =>
+        games.filter(game => game.status === "won" && Number(game.attempts) === attempt).length
+    );
+    const maxAttempt = Math.max(0, ...byAttempt);
+    const attemptBars = maxAttempt === 0
+        ? `<p class="chart-empty">Ninguém acertou a palavra ainda.</p>`
+        : `<div class="hbar-list">${byAttempt.map((count, index) => `
+            <div class="hbar-row">
+                <span class="hbar-label"><strong>${index + 1}ª tentativa</strong><small>${adminNumber(MINIGAME_POINTS_BY_ATTEMPT[index] || 0)} pontos</small></span>
+                <span class="hbar-track"><span class="hbar-fill" style="width:${((count / maxAttempt) * 100).toFixed(1)}%"></span></span>
+                <span class="hbar-value">${adminNumber(count)}</span>
+            </div>
+        `).join("")}</div>`;
+
+    const chip = (label, value, note = "") => `
+        <div class="status-chip">
+            <span>${label}</span>
+            <strong>${value}</strong>
+            ${note ? `<span>${note}</span>` : ""}
+        </div>`;
+
+    const gameRows = games.map(game => ({ created_at: game.started_at, status: game.status }));
+
+    return `
+        <div class="insight-panel" data-panel="minigame" hidden>
+            <div class="insight-toolbar">
+                <h2>Minigame diário</h2>
+                <div class="view-tabs" role="tablist">
+                    <button type="button" role="tab" data-view-tab="users" class="active" aria-selected="true">Por usuário</button>
+                    <button type="button" role="tab" data-view-tab="day" aria-selected="false">Por dia</button>
+                    <button type="button" role="tab" data-view-tab="attempts" aria-selected="false">Tentativas</button>
+                </div>
+            </div>
+
+            <div class="status-chips minigame-chips">
+                ${chip("Partidas", adminNumber(summary.total), summary.playing ? `${adminNumber(summary.playing)} em andamento` : "")}
+                ${chip("Jogadores", adminNumber(summary.players))}
+                ${chip("Acertos", adminNumber(summary.won), percent(summary.winRate))}
+                ${chip("Erros", adminNumber(summary.lost))}
+                ${chip("Saíram no meio", adminNumber(summary.abandoned))}
+                ${chip("Pontos distribuídos", adminNumber(summary.points))}
+                ${summary.creditProblems ? chip("Créditos pendentes", adminNumber(summary.creditProblems), "o servidor tenta de novo") : ""}
+            </div>
+
+            <div data-view="users">
+                <div class="table-toolbar">
+                    <h2>Jogadores <span class="count-pill" data-filter-count="minigame-table">${adminNumber(perUser.size)}</span></h2>
+                    <input type="search" class="table-search" placeholder="Buscar jogador..." data-filter-table="minigame-table" aria-label="Buscar jogadores do minigame">
+                </div>
+                <div class="table-wrap">
+                    <table id="minigame-table" data-sortable>
+                        <thead>
+                            <tr>
+                                <th data-sort="text">Usuário</th>
+                                <th data-sort="number">Partidas</th>
+                                <th data-sort="number">Acertos</th>
+                                <th data-sort="number">Erros</th>
+                                <th data-sort="number" title="Saiu da página no meio da partida">Saiu no meio</th>
+                                <th data-sort="number">Taxa de acerto</th>
+                                <th data-sort="number" title="Média de tentativas nas partidas em que acertou">Média de tentativas</th>
+                                <th data-sort="number">Melhor</th>
+                                <th data-sort="number">Pontos ganhos</th>
+                                <th data-sort="text">Última partida</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${userRows || `<tr class="empty-row"><td colspan="10">Ninguém jogou o minigame ainda.</td></tr>`}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div data-view="day" hidden>
+                ${dailyViews("minigame", "Partidas por dia", "partidas", gameRows, () => 1)}
+            </div>
+
+            <div data-view="attempts" hidden>
+                <article class="chart-card">
+                    <div class="chart-card-header">
+                        <h3>Em qual tentativa acertaram</h3>
+                        <span class="chart-total">${adminNumber(summary.won)} acertos</span>
+                    </div>
+                    ${attemptBars}
+                </article>
+            </div>
+        </div>
     `;
 }
 
@@ -1658,10 +1928,36 @@ const TWITCH_CHAT_DISABLED = process.env.DISABLE_TWITCH_CHAT === "1";
 // Arena: duração do giro e tempo para o vencedor responder (contado a partir da revelação)
 const ARENA_SPIN_MS = 14000;
 const ARENA_RESPONSE_MS = 40000;
-// Sorteio pelo chat: comando de inscrição e limites do formulário
+// Sorteio pelo chat: comando de inscrição padrão e limites do formulário
 const CHAT_GIVEAWAY_COMMAND = "!euquero";
 const CHAT_GIVEAWAY_MAX_MINUTES = 60;
 const CHAT_GIVEAWAY_MAX_WINNERS = 50;
+// Mesmo limite de ganhadores para o sorteio normal (por tickets)
+const GIVEAWAY_MAX_WINNERS = CHAT_GIVEAWAY_MAX_WINNERS;
+
+// Palavra que inscreve no sorteio pelo chat: uma palavra só, sem espaços.
+// Devolve a palavra em minúsculas ou null se for inválida.
+function normalizeChatCommand(value) {
+    const text = String(value ?? "").trim().toLowerCase();
+    if (!text) return CHAT_GIVEAWAY_COMMAND;
+    return /^!?[\p{L}\p{N}_-]{2,29}$/u.test(text) && text.length <= 30 ? text : null;
+}
+
+function chatCommandOf(giveaway) {
+    return giveaway?.chat_command || CHAT_GIVEAWAY_COMMAND;
+}
+
+// Quantidade de ganhadores digitada no formulário (1 a GIVEAWAY_MAX_WINNERS) ou null
+function parseWinnersCount(value) {
+    const number = Number(value);
+    return Number.isInteger(number) && number >= 1 && number <= GIVEAWAY_MAX_WINNERS ? number : null;
+}
+
+// Finalizado: manualmente (finished_at) ou quando todos os ganhadores confirmaram
+function isGiveawayFinished(giveaway, confirmedCount) {
+    return Boolean(giveaway.finished_at) ||
+        (giveaway.status === "closed" && confirmedCount >= (giveaway.winners_count || 1));
+}
 
 // Status da live (Helix GET /streams com token de aplicativo)
 const LIVE_CHANNEL_LOGIN = "joao_weird";
@@ -3062,7 +3358,7 @@ app.get("/dashboard", async (req, res) => {
             <div class="account-panel">
                 <div class="account-panel-header">
                     <h2>✦ Últimas compras</h2>
-                    ${recentTransactions.length > 0 ? `<a href="/my-tickets">Ver meus tickets →</a>` : ""}
+                    ${recentTransactions.length > 0 ? `<a href="/giveaways#meus-sorteios">Ver meus tickets →</a>` : ""}
                 </div>
                 ${purchasesHtml}
             </div>
@@ -3080,13 +3376,8 @@ app.get("/dashboard", async (req, res) => {
         <section class="dashboard-grid">
 
             <a href="/giveaways" class="dashboard-card">
-                <strong>✦ Comprar Tickets</strong>
-                <span>Participe dos sorteios e concorra aos tesouros.</span>
-            </a>
-
-            <a href="/my-tickets" class="dashboard-card">
-                <strong>✦ Meus Tickets</strong>
-                <span>Confira seus tickets e acompanhe suas participações.</span>
+                <strong>✦ Sorteios e Meus Tickets</strong>
+                <span>Compre tickets, concorra aos tesouros e confira seus tickets em cada sorteio.</span>
             </a>
 
             <a href="/minigame" class="dashboard-card">
@@ -3120,7 +3411,7 @@ app.get("/logout", (req, res) => {
 
 app.get("/admin", requireAdmin, async (req, res) => {
     try {
-        const [users, tickets, transactions, giveaways, drawsResult] = await Promise.all([
+        const [users, tickets, transactions, giveaways, drawsResult, games] = await Promise.all([
             fetchAllRows((from, to) => supabase
                 .from("users")
                 .select("twitch_id, twitch_login, display_name, created_at")
@@ -3145,7 +3436,13 @@ app.get("/admin", requireAdmin, async (req, res) => {
             supabase
                 .from("giveaway_draws")
                 .select("giveaway_id, round_number, winner_twitch_id, status")
-                .order("round_number", { ascending: true })
+                .order("round_number", { ascending: true }),
+
+            fetchAllRows((from, to) => supabase
+                .from("daily_word_games")
+                .select("twitch_id, status, attempts, points_awarded, credit_status, started_at, users ( display_name, twitch_login )")
+                .order("started_at", { ascending: true })
+                .range(from, to))
         ]);
 
         if (drawsResult.error) {
@@ -3167,11 +3464,12 @@ app.get("/admin", requireAdmin, async (req, res) => {
             <h1>Painel administrativo</h1>
             <p>Clique em um card para ver os gráficos.</p>
 
-            <div class="stats-grid">
+            <div class="stats-grid stats-grid-5">
                 ${card("users", "Usuários cadastrados", adminNumber(users.length))}
                 ${card("giveaways", "Sorteios ativos", adminNumber(activeCount))}
                 ${card("tickets", "Tickets vendidos", adminNumber(tickets.length))}
                 ${card("points", "Pontos movimentados", adminNumber(totalPoints))}
+                ${card("minigame", "Partidas do minigame", adminNumber(games.length))}
             </div>
 
             ${buildAdminInsightsHtml({
@@ -3179,7 +3477,8 @@ app.get("/admin", requireAdmin, async (req, res) => {
                 tickets,
                 transactions,
                 giveaways,
-                draws: drawsResult.data || []
+                draws: drawsResult.data || [],
+                games
             })}
         `;
 
@@ -3187,7 +3486,7 @@ app.get("/admin", requireAdmin, async (req, res) => {
             title: "Administração",
             activePath: "/admin",
             content,
-            script: ADMIN_INSIGHTS_SCRIPT
+            script: ADMIN_INSIGHTS_SCRIPT + ADMIN_TABLE_SCRIPT
         }));
     } catch (error) {
         console.error("Erro ao carregar o painel administrativo:", error);
@@ -3246,15 +3545,7 @@ function changeNumber(id, amount) {
                         <span>TREASURE</span>
                     </div>
 
-                    <nav>
-                        <a href="/admin">Início</a>
-                        <a href="/admin/users">Usuários</a>
-                        <a href="/admin/giveaways">Sorteios</a>
-                        <a href="/admin/tickets">Tickets</a>
-                        <a href="/admin/transactions">Transações</a>
-                        <a href="/admin/reconciliation">Conferência de compras</a>
-                        <a href="/admin/settings">Configurações</a>
-                    </nav>
+                    <nav>${adminNavLinksHtml("/admin/settings")}</nav>
 
                     <div class="sidebar-footer">
                         <a href="/dashboard">Voltar ao site</a>
@@ -3741,8 +4032,11 @@ app.post("/admin/transactions/:id/refund-complete", requireAdmin, requireCsrf, a
 // Carrega o sorteio escolhido (ou todos) com tickets, transações e rodadas
 async function loadAdminGiveawayData(req) {
     const giveaways = await loadAdminGiveaways();
+    // Só mostra os detalhes depois que o admin escolhe um sorteio (ou "todos")
     const showAll = req.query.sorteio === "todos";
-    const selected = showAll ? null : pickAdminGiveaway(giveaways, req.query.sorteio);
+    const selected = showAll || typeof req.query.sorteio !== "string"
+        ? null
+        : giveaways.find(giveaway => giveaway.id === req.query.sorteio) || null;
     const hasScope = showAll || Boolean(selected);
     const scoped = (query) => selected ? query.eq("giveaway_id", selected.id) : query;
 
@@ -3808,103 +4102,24 @@ function adminGiveawayHeaderHtml(data, basePath, monthParam) {
             basePath
         })}
 
-        ${buildGiveawaySummaryHtml({
+        ${data.hasScope ? buildGiveawaySummaryHtml({
             giveaway: data.selected,
             showAll: data.showAll,
             stats: computeGiveawayStats(data.tickets, data.transactions),
             draws: data.draws,
             namesById: data.namesById,
             basePath
-        })}
+        }) : `<p class="muted-note pick-giveaway-note">Clique em um dia marcado no calendário ou escolha um sorteio na lista para ver participantes, tickets e compras.</p>`}
     `;
 }
 
-app.get("/admin/transactions", requireAdmin, async (req, res) => {
-    try {
-        const data = await loadAdminGiveawayData(req);
-        const { transactions, showAll, titlesById } = data;
-
-        // Totais por status
-        const byStatus = new Map();
-
-        for (const transaction of transactions) {
-            const entry = byStatus.get(transaction.status) || { count: 0, points: 0 };
-            entry.count++;
-            entry.points += Number(transaction.points_spent) || 0;
-            byStatus.set(transaction.status, entry);
-        }
-
-        const statusChips = [...byStatus.entries()].map(([status, entry]) => `
-            <div class="status-chip">
-                ${adminBadge(status, TRANSACTION_STATUS_LABELS)}
-                <strong>${adminNumber(entry.count)}</strong>
-                <span>${adminNumber(entry.points)} pontos</span>
-            </div>
-        `).join("");
-
-        const needsReview = (status) => status === "pending" || status === "reconciliation_required" || status === "refund_pending";
-
-        const rows = transactions.map(transaction => `
-            <tr>
-                <td><a href="/admin/users/${encodeURIComponent(transaction.twitch_id)}">${escapeDashboardHtml(adminUserName(transaction.users))}</a></td>
-                ${showAll ? `<td>${escapeDashboardHtml(titlesById.get(transaction.giveaway_id) || "Sorteio não encontrado")}</td>` : ""}
-                <td data-value="${Number(transaction.points_spent) || 0}">${adminNumber(transaction.points_spent)}</td>
-                <td data-value="${Number(transaction.tickets_purchased) || 0}">${adminNumber(transaction.tickets_purchased)}</td>
-                <td>${adminBadge(transaction.status, TRANSACTION_STATUS_LABELS)}</td>
-                <td data-value="${escapeDashboardHtml(transaction.created_at || "")}">${adminDateTime(transaction.created_at)}</td>
-                <td>${needsReview(transaction.status)
-                    ? `<a href="/admin/transactions/${encodeURIComponent(transaction.id)}/reconcile">Conferir compra</a>`
-                    : ""}</td>
-            </tr>
-        `).join("");
-
-        const columns = showAll ? 7 : 6;
-
-        const content = `
-            <h1>Transações</h1>
-            <p>Escolha um dia marcado no calendário para ver as compras daquele sorteio.</p>
-
-            ${adminGiveawayHeaderHtml(data, "/admin/transactions", req.query.mes)}
-
-            ${data.hasScope ? `
-                ${statusChips ? `<div class="status-chips">${statusChips}</div>` : ""}
-
-                <div class="table-toolbar">
-                    <h2>Compras <span class="count-pill" data-filter-count="transactions-table">${adminNumber(transactions.length)}</span></h2>
-                    <input type="search" class="table-search" placeholder="Buscar usuário ou status..." data-filter-table="transactions-table" aria-label="Buscar transações">
-                </div>
-
-                <div class="table-wrap">
-                    <table id="transactions-table" data-sortable>
-                        <thead>
-                            <tr>
-                                <th data-sort="text">Usuário</th>
-                                ${showAll ? `<th data-sort="text">Sorteio</th>` : ""}
-                                <th data-sort="number">Pontos</th>
-                                <th data-sort="number">Tickets</th>
-                                <th data-sort="text">Status</th>
-                                <th data-sort="text">Data</th>
-                                <th>Ação</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            ${rows || `<tr class="empty-row"><td colspan="${columns}">Nenhuma transação neste sorteio.</td></tr>`}
-                        </tbody>
-                    </table>
-                </div>
-            ` : ""}
-        `;
-
-        res.send(renderAdminPage({
-            title: "Transações",
-            activePath: "/admin/transactions",
-            content,
-            script: ADMIN_TABLE_SCRIPT
-        }));
-    } catch (error) {
-        console.error("Erro ao carregar transações:", error);
-        res.status(500).send("Erro ao carregar transações.");
-    }
+// A página de transações foi unida à de tickets ("Tickets e compras")
+app.get("/admin/transactions", requireAdmin, (req, res) => {
+    const params = new URLSearchParams();
+    if (typeof req.query.sorteio === "string") params.set("sorteio", req.query.sorteio);
+    if (typeof req.query.mes === "string") params.set("mes", req.query.mes);
+    params.set("aba", "compras");
+    res.redirect("/admin/tickets?" + params.toString());
 });
 
 app.post("/admin/giveaways", requireAdmin, requireCsrf, async (req, res) => {
@@ -3940,6 +4155,12 @@ app.post("/admin/giveaways", requireAdmin, requireCsrf, async (req, res) => {
         return res.status(400).send("As datas informadas são inválidas.");
     }
 
+    const winners = parseWinnersCount(req.body.winners ?? 1);
+
+    if (winners === null) {
+        return res.status(400).send(`A quantidade de ganhadores deve ser de 1 a ${GIVEAWAY_MAX_WINNERS}.`);
+    }
+
     const { error } = await supabase
         .from("giveaways")
         .insert({
@@ -3947,7 +4168,8 @@ app.post("/admin/giveaways", requireAdmin, requireCsrf, async (req, res) => {
             description: description?.trim() || null,
             starts_at: startDate.toISOString(),
             ends_at: endDate.toISOString(),
-            status: "draft"
+            status: "draft",
+            winners_count: winners
         });
 
     if (error) {
@@ -4170,6 +4392,19 @@ app.get("/admin/giveaways/:id/edit", requireAdmin, async (req, res) => {
                         >
                     </div>
 
+                    <div class="giveaway-field">
+                        <label for="winners">Quantidade de ganhadores</label>
+                        <input
+                            type="number"
+                            id="winners"
+                            name="winners"
+                            min="1"
+                            max="${GIVEAWAY_MAX_WINNERS}"
+                            value="${escapeHtml(giveaway.winners_count || 1)}"
+                            required
+                        >
+                    </div>
+
                     <button type="submit">Salvar alterações</button>
                 </form>
 
@@ -4215,6 +4450,12 @@ app.post("/admin/giveaways/:id/edit", requireAdmin, requireCsrf, async (req, res
         return res.status(400).send("As datas informadas são inválidas.");
     }
 
+    const winners = parseWinnersCount(req.body.winners ?? 1);
+
+    if (winners === null) {
+        return res.status(400).send(`A quantidade de ganhadores deve ser de 1 a ${GIVEAWAY_MAX_WINNERS}.`);
+    }
+
     const { data: giveaway, error: fetchError } = await supabase
         .from("giveaways")
         .select("id, status")
@@ -4240,7 +4481,8 @@ app.post("/admin/giveaways/:id/edit", requireAdmin, requireCsrf, async (req, res
         title: title.trim(),
         description: description?.trim() || null,
         starts_at: startDate.toISOString(),
-        ends_at: endDate.toISOString()
+        ends_at: endDate.toISOString(),
+        winners_count: winners
     })
     .eq("id", giveaway.id)
     .eq("status", "draft")
@@ -5124,14 +5366,15 @@ app.get("/admin/users/:twitchId", requireAdmin, async (req, res) => {
     }
 });
 
+// Tickets e compras: uma página só (a antiga /admin/transactions redireciona para cá)
 app.get("/admin/tickets", requireAdmin, async (req, res) => {
     try {
         const data = await loadAdminGiveawayData(req);
-        const { tickets, showAll, titlesById, draws } = data;
+        const { tickets, transactions, showAll, titlesById, draws } = data;
 
         const winnerIds = new Set(draws.filter(draw => draw.status === "confirmed").map(draw => draw.winner_twitch_id));
 
-        // Participantes agrupados
+        // ----- Participantes agrupados -----
         const participants = new Map();
 
         for (const ticket of tickets) {
@@ -5158,6 +5401,7 @@ app.get("/admin/tickets", requireAdmin, async (req, res) => {
                 </tr>
             `).join("");
 
+        // ----- Tickets emitidos -----
         const ticketRows = tickets.map(ticket => `
             <tr>
                 <td data-value="${Number(ticket.ticket_number) || 0}">#${escapeDashboardHtml(ticket.ticket_number)}</td>
@@ -5167,13 +5411,56 @@ app.get("/admin/tickets", requireAdmin, async (req, res) => {
             </tr>
         `).join("");
 
-        const content = `
-            <h1>Tickets</h1>
-            <p>Escolha um dia marcado no calendário para ver os tickets daquele sorteio.</p>
+        // ----- Compras (transações) -----
+        const byStatus = new Map();
 
-            ${adminGiveawayHeaderHtml(data, "/admin/tickets", req.query.mes)}
+        for (const transaction of transactions) {
+            const entry = byStatus.get(transaction.status) || { count: 0, points: 0 };
+            entry.count++;
+            entry.points += Number(transaction.points_spent) || 0;
+            byStatus.set(transaction.status, entry);
+        }
 
-            ${data.hasScope ? `
+        const statusChips = [...byStatus.entries()].map(([status, entry]) => `
+            <div class="status-chip">
+                ${adminBadge(status, TRANSACTION_STATUS_LABELS)}
+                <strong>${adminNumber(entry.count)}</strong>
+                <span>${adminNumber(entry.points)} pontos</span>
+            </div>
+        `).join("");
+
+        const needsReview = (status) => status === "pending" || status === "reconciliation_required" || status === "refund_pending";
+        const reviewCount = transactions.filter(transaction => needsReview(transaction.status)).length;
+
+        const transactionRows = transactions.map(transaction => `
+            <tr>
+                <td><a href="/admin/users/${encodeURIComponent(transaction.twitch_id)}">${escapeDashboardHtml(adminUserName(transaction.users))}</a></td>
+                ${showAll ? `<td>${escapeDashboardHtml(titlesById.get(transaction.giveaway_id) || "Sorteio não encontrado")}</td>` : ""}
+                <td data-value="${Number(transaction.points_spent) || 0}">${adminNumber(transaction.points_spent)}</td>
+                <td data-value="${Number(transaction.tickets_purchased) || 0}">${adminNumber(transaction.tickets_purchased)}</td>
+                <td>${adminBadge(transaction.status, TRANSACTION_STATUS_LABELS)}</td>
+                <td data-value="${escapeDashboardHtml(transaction.created_at || "")}">${adminDateTime(transaction.created_at)}</td>
+                <td>${needsReview(transaction.status)
+                    ? `<a href="/admin/transactions/${encodeURIComponent(transaction.id)}/reconcile">Conferir compra</a>`
+                    : ""}</td>
+            </tr>
+        `).join("");
+
+        const tab = ["participantes", "tickets", "compras"].includes(req.query.aba) ? req.query.aba : "participantes";
+        const tabButton = (id, label, count, extra = "") => `
+            <button type="button" role="tab" data-tab="${id}" aria-selected="${tab === id}"${tab === id ? ' class="active"' : ""}>
+                ${label} <span class="count-pill">${adminNumber(count)}</span>${extra}
+            </button>`;
+
+        const details = data.hasScope ? `
+            <div class="view-tabs detail-tabs" role="tablist">
+                ${tabButton("participantes", "Participantes", participants.size)}
+                ${tabButton("tickets", "Tickets emitidos", tickets.length)}
+                ${tabButton("compras", "Compras", transactions.length,
+                    reviewCount ? ` <span class="badge badge-pending">${adminNumber(reviewCount)} para conferir</span>` : "")}
+            </div>
+
+            <section data-tab-panel="participantes"${tab === "participantes" ? "" : " hidden"}>
                 <div class="table-toolbar">
                     <h2>Participantes <span class="count-pill" data-filter-count="participants-table">${adminNumber(participants.size)}</span></h2>
                     <input type="search" class="table-search" placeholder="Buscar participante..." data-filter-table="participants-table" aria-label="Buscar participantes">
@@ -5195,7 +5482,9 @@ app.get("/admin/tickets", requireAdmin, async (req, res) => {
                         </tbody>
                     </table>
                 </div>
+            </section>
 
+            <section data-tab-panel="tickets"${tab === "tickets" ? "" : " hidden"}>
                 <div class="table-toolbar">
                     <h2>Tickets emitidos <span class="count-pill" data-filter-count="tickets-table">${adminNumber(tickets.length)}</span></h2>
                     <input type="search" class="table-search" placeholder="Buscar número ou usuário..." data-filter-table="tickets-table" aria-label="Buscar tickets">
@@ -5216,20 +5505,84 @@ app.get("/admin/tickets", requireAdmin, async (req, res) => {
                         </tbody>
                     </table>
                 </div>
-            ` : ""}
+            </section>
+
+            <section data-tab-panel="compras"${tab === "compras" ? "" : " hidden"}>
+                ${statusChips ? `<div class="status-chips">${statusChips}</div>` : ""}
+
+                <div class="table-toolbar">
+                    <h2>Compras <span class="count-pill" data-filter-count="transactions-table">${adminNumber(transactions.length)}</span></h2>
+                    <input type="search" class="table-search" placeholder="Buscar usuário ou status..." data-filter-table="transactions-table" aria-label="Buscar compras">
+                </div>
+
+                <div class="table-wrap">
+                    <table id="transactions-table" data-sortable>
+                        <thead>
+                            <tr>
+                                <th data-sort="text">Usuário</th>
+                                ${showAll ? `<th data-sort="text">Sorteio</th>` : ""}
+                                <th data-sort="number">Pontos</th>
+                                <th data-sort="number">Tickets</th>
+                                <th data-sort="text">Status</th>
+                                <th data-sort="text">Data</th>
+                                <th>Ação</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${transactionRows || `<tr class="empty-row"><td colspan="${showAll ? 7 : 6}">Nenhuma compra neste sorteio.</td></tr>`}
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+        ` : "";
+
+        const content = `
+            <h1>Tickets e compras</h1>
+            <p>Escolha um sorteio para ver os participantes, os tickets emitidos e as compras.</p>
+
+            ${adminGiveawayHeaderHtml(data, "/admin/tickets", req.query.mes)}
+
+            ${details}
         `;
 
         res.send(renderAdminPage({
-            title: "Tickets",
+            title: "Tickets e compras",
             activePath: "/admin/tickets",
             content,
-            script: ADMIN_TABLE_SCRIPT
+            script: ADMIN_TABLE_SCRIPT + ADMIN_DETAIL_TABS_SCRIPT
         }));
     } catch (error) {
-        console.error("Erro ao carregar tickets:", error);
-        res.status(500).send("Erro ao carregar tickets.");
+        console.error("Erro ao carregar tickets e compras:", error);
+        res.status(500).send("Erro ao carregar tickets e compras.");
     }
 });
+
+// Abas Participantes / Tickets / Compras (guarda a aba no endereço para o F5)
+const ADMIN_DETAIL_TABS_SCRIPT = `
+    (function () {
+        var buttons = document.querySelectorAll(".detail-tabs [data-tab]");
+
+        buttons.forEach(function (button) {
+            button.addEventListener("click", function () {
+                buttons.forEach(function (other) {
+                    var on = other === button;
+                    other.classList.toggle("active", on);
+                    other.setAttribute("aria-selected", on ? "true" : "false");
+                });
+
+                document.querySelectorAll("[data-tab-panel]").forEach(function (panel) {
+                    panel.hidden = panel.dataset.tabPanel !== button.dataset.tab;
+                });
+
+                try {
+                    var url = new URL(location.href);
+                    url.searchParams.set("aba", button.dataset.tab);
+                    history.replaceState(null, "", url);
+                } catch (error) {}
+            });
+        });
+    })();
+`;
 
 app.get("/admin/reconciliation", requireAdmin, async (req, res) => {
 
@@ -5345,15 +5698,7 @@ app.get("/admin/reconciliation", requireAdmin, async (req, res) => {
                     <span>TREASURE</span>
                 </div>
 
-                <nav>
-                    <a href="/admin">Início</a>
-                    <a href="/admin/users">Usuários</a>
-                    <a href="/admin/giveaways">Sorteios</a>
-                    <a href="/admin/tickets">Tickets</a>
-                    <a href="/admin/transactions">Transações</a>
-                    <a href="/admin/reconciliation">Conferência de compras</a>
-                    <a href="/admin/settings">Configurações</a>
-                </nav>
+                <nav>${adminNavLinksHtml("/admin/reconciliation")}</nav>
 
                 <div class="sidebar-footer">
                     <a href="/dashboard">Voltar ao site</a>
@@ -5392,135 +5737,93 @@ app.get("/admin/reconciliation", requireAdmin, async (req, res) => {
 });
 
 app.get("/admin/giveaways", requireAdmin, async (req, res) => {
-
     const csrfToken = getCsrfToken(req);
 
-    const { data: giveaways, error } = await supabase
-        .from("giveaways")
-        .select("*")
-        .eq("kind", "tickets")
-        .order("created_at", { ascending: false });
+    try {
+        const { data: giveaways, error } = await supabase
+            .from("giveaways")
+            .select("*")
+            .eq("kind", "tickets")
+            .order("created_at", { ascending: false });
 
-    if (error) {
-        console.error("Erro ao buscar sorteios:", error.message);
-        return res.status(500).send("Erro ao carregar sorteios.");
-    }
+        if (error) throw error;
 
-    const escapeHtml = (value) => String(value ?? "").replace(
-    /[&<>"']/g,
-    (char) => ({
-        "&": "&amp;",
-        "<": "&lt;",
-        ">": "&gt;",
-        '"': "&quot;",
-        "'": "&#39;"
-    })[char]
-);
+        const list = giveaways || [];
+        const { drawsByGiveaway, namesById } = await loadGiveawayDrawsInfo(list.map(giveaway => giveaway.id));
+        const csrf = escapeDashboardHtml(csrfToken);
 
-    
-const giveawayRows = (giveaways || []).map(giveaway => `
-    <tr>
-        <td>${escapeHtml(giveaway.title)}</td>
-        <td>${escapeHtml(giveaway.status)}</td>
-        <td>${giveaway.starts_at ? adminDateTime(giveaway.starts_at) : "-"}</td>
-        <td>${giveaway.ends_at ? adminDateTime(giveaway.ends_at) : "-"}</td>
-        
-<td>
-    <div class="giveaway-actions">
-        ${
-            giveaway.status === "draft" ? `
-                <a class="giveaway-action-button"
-                   href="/admin/giveaways/${encodeURIComponent(giveaway.id)}/edit">
-                    Editar
-                </a>
+        const postForm = (id, action, label, confirmText = "") => `
+            <form class="giveaway-action-form" action="/admin/giveaways/${encodeURIComponent(id)}/${action}" method="POST"${confirmText ? ` data-confirm="${escapeDashboardHtml(confirmText)}"` : ""}>
+                <input type="hidden" name="_csrf" value="${csrf}">
+                <button type="submit">${label}</button>
+            </form>`;
 
-                <form class="giveaway-action-form"
-                      action="/admin/giveaways/${encodeURIComponent(giveaway.id)}/activate"
-                      method="POST">
-                    <input type="hidden" name="_csrf" value="${csrfToken}">
-                    <button type="submit">Ativar sorteio</button>
-                </form>
+        const winnersForm = (giveaway) => `
+            <form class="winners-count-form" action="/admin/giveaways/${encodeURIComponent(giveaway.id)}/ganhadores" method="POST">
+                <input type="hidden" name="_csrf" value="${csrf}">
+                <label>
+                    <span>Ganhadores</span>
+                    <input type="number" name="winners" min="1" max="${GIVEAWAY_MAX_WINNERS}" value="${escapeDashboardHtml(giveaway.winners_count || 1)}" required>
+                </label>
+                <button type="submit">Salvar</button>
+            </form>`;
 
-                <form class="giveaway-action-form"
-                      action="/admin/giveaways/${encodeURIComponent(giveaway.id)}/cancel"
-                      method="POST">
-                    <input type="hidden" name="_csrf" value="${csrfToken}">
-                    <button type="submit">Cancelar sorteio</button>
-                </form>
-            ` : giveaway.status === "active" ? `
-                <form class="giveaway-action-form"
-                      action="/admin/giveaways/${encodeURIComponent(giveaway.id)}/close"
-                      method="POST">
-                    <input type="hidden" name="_csrf" value="${csrfToken}">
-                    <button type="submit">Encerrar sorteio</button>
-                </form>
+        const rows = list.map(giveaway => {
+            const draws = drawsByGiveaway.get(giveaway.id) || [];
+            const confirmed = confirmedDrawCount(draws);
+            const finished = isGiveawayFinished(giveaway, confirmed);
+            const status = finished ? "finished" : giveaway.status;
+            let actions = "";
 
-                <form class="giveaway-action-form"
-                      action="/admin/giveaways/${encodeURIComponent(giveaway.id)}/cancel"
-                      method="POST">
-                    <input type="hidden" name="_csrf" value="${csrfToken}">
-                    <button type="submit">Cancelar sorteio</button>
-                </form>
-            ` : giveaway.status === "closed" ? `
-    <button
-        type="button"
-        class="giveaway-action-button"
-        onclick="window.open(
-            '/arena/${encodeURIComponent(giveaway.id)}',
-            '_blank',
-            'width=950,height=750'
-        )">
-        Iniciar sorteio
-    </button>
-` : ""
-        }
-    </div>
-</td>
+            if (giveaway.status === "draft") {
+                actions = `
+                    <a class="giveaway-action-button" href="/admin/giveaways/${encodeURIComponent(giveaway.id)}/edit">Editar</a>
+                    ${postForm(giveaway.id, "activate", "Ativar sorteio")}
+                    ${postForm(giveaway.id, "cancel", "Cancelar sorteio", "Cancelar este sorteio?")}
+                `;
+            } else if (giveaway.status === "active") {
+                actions = `
+                    ${postForm(giveaway.id, "close", "Encerrar compras", "Encerrar a compra de tickets agora?")}
+                    ${postForm(giveaway.id, "cancel", "Cancelar sorteio", "Cancelar este sorteio?")}
+                    ${winnersForm(giveaway)}
+                `;
+            } else if (giveaway.status === "closed" && !finished) {
+                actions = `
+                    <button type="button" class="giveaway-action-button"
+                        onclick="window.open('/arena/${encodeURIComponent(giveaway.id)}', '_blank', 'width=950,height=750')">
+                        ${draws.length ? "Abrir Arena" : "Iniciar sorteio"}
+                    </button>
+                    ${winnersForm(giveaway)}
+                    ${hasPendingDraw(draws) ? "" : postForm(giveaway.id, "finalizar", "Finalizar sorteio",
+                        "Finalizar este sorteio? Depois disso não dá para girar de novo.")}
+                `;
+            }
 
-    </tr>
-`).join("");
+            if (draws.length || finished) {
+                actions += adminWinnersButtonHtml(giveaway.id);
+            }
 
-    res.send(`
-        <!DOCTYPE html>
-        <html lang="pt-BR">
-        <head>
-    <meta charset="UTF-8">
-    <title>Sorteios - Weirdo's Treasure</title>
-    <link rel="stylesheet" href="/css/admin.css">
-</head>
-        <body>
+            return `
+                <tr>
+                    <td>${escapeDashboardHtml(giveaway.title)}</td>
+                    <td>${adminBadge(status, GIVEAWAY_STATUS_LABELS)}</td>
+                    <td>${adminDateTime(giveaway.starts_at)}</td>
+                    <td>${adminDateTime(giveaway.ends_at)}</td>
+                    <td>${giveaway.status === "cancelled" ? "—" : `${confirmed} de ${escapeDashboardHtml(giveaway.winners_count || 1)}`}</td>
+                    <td><div class="giveaway-actions">${actions}</div></td>
+                </tr>
+                ${draws.length || finished
+                    ? adminWinnersRowHtml({ giveaway, draws, usersById: namesById, colspan: 6 })
+                    : ""}
+            `;
+        }).join("");
 
-    <aside class="sidebar">
-        <div class="logo">
-            <h1>WEIRDO'S</h1>
-            <span>TREASURE</span>
-        </div>
-
-        <nav>
-            <a href="/admin">Início</a>
-            <a href="/admin/users">Usuários</a>
-            <a href="/admin/giveaways">Sorteios</a>
-            <a href="/admin/sorteio-chat">Sorteio pelo chat</a>
-            <a href="/admin/tickets">Tickets</a>
-            <a href="/admin/transactions">Transações</a>
-            <a href="/admin/reconciliation">Conferência de compras</a>
-            <a href="/admin/settings">Configurações</a>
-        </nav>
-
-        <div class="sidebar-footer">
-            <a href="/dashboard">Voltar ao site</a>
-            <a href="/logout">Sair</a>
-        </div>
-    </aside>
-
-    <main class="main-content">
-        <h1>Sorteios</h1>
+        const content = `
+            <h1>Sorteios</h1>
             <p>Gerenciamento de sorteios do Weirdo's Treasure.</p>
 
-            <p><a href="/admin">Voltar ao painel</a></p>
-
             <section style="background:#211c17; border:1px solid ${twitchBroadcasterAccessToken ? "#4f7a46" : "#8b493d"}; border-radius:12px; padding:20px 25px; max-width:640px; margin:10px 0 26px;">
-                <h2 style="margin:0 0 8px; font-size:18px; color:#d6a85c;">Canal da Twitch</h2>
+                <h2 style="margin:0 0 8px; font-size:18px; color:#d6a85c; border:0; padding:0;">Canal da Twitch</h2>
                 <p style="margin:0 0 14px; color:#c8baa4; line-height:1.5;">
                     ${twitchBroadcasterAccessToken
                         ? "✔ Conectado. O chat (confirmação dos vencedores) e a lista de inscritos estão funcionando."
@@ -5532,79 +5835,168 @@ const giveawayRows = (giveaways || []).map(giveaway => `
                 <p style="margin:14px 0 0; color:#a99578; font-size:13px; line-height:1.5;">
                     Quando a data de encerramento chega, o sorteio só fecha a compra de tickets.
                     O giro é sempre manual: clique em "Iniciar sorteio" e depois em "Iniciar giro" na Arena.
+                    A Arena para sozinha quando todos os ganhadores confirmarem; se quiser parar antes, use "Finalizar sorteio".
                 </p>
             </section>
 
-<h2>Criar novo sorteio</h2>
+            <h2>Criar novo sorteio</h2>
 
-<form action="/admin/giveaways" method="POST" class="giveaway-form">
-    <input type="hidden" name="_csrf" value="${csrfToken}">
+            <form action="/admin/giveaways" method="POST" class="giveaway-form">
+                <input type="hidden" name="_csrf" value="${csrf}">
 
-    <div class="giveaway-field">
-        <label for="title">Nome do sorteio</label>
-        <input
-            type="text"
-            id="title"
-            name="title"
-            placeholder="Ex: Sorteio de 30 dias de VIP"
-            maxlength="100"
-            required
-        >
-    </div>
+                <div class="giveaway-field">
+                    <label for="title">Nome do sorteio</label>
+                    <input type="text" id="title" name="title" placeholder="Ex: Sorteio de 30 dias de VIP" maxlength="${GIVEAWAY_TITLE_MAX}" required>
+                </div>
 
-    <div class="giveaway-field">
-        <label for="description">Descrição</label>
-        <textarea
-            id="description"
-            name="description"
-            placeholder="Descreva o prêmio e as regras do sorteio."
-            rows="4"
-        ></textarea>
-    </div>
+                <div class="giveaway-field">
+                    <label for="description">Descrição</label>
+                    <textarea id="description" name="description" placeholder="Descreva o prêmio e as regras do sorteio." rows="4" maxlength="${GIVEAWAY_DESCRIPTION_MAX}"></textarea>
+                </div>
 
-    <div class="giveaway-field">
-        <label for="starts_at">Data e horário de início</label>
-        <input
-            type="datetime-local"
-            id="starts_at"
-            name="starts_at"
-            required
-        >
-    </div>
+                <div class="giveaway-field">
+                    <label for="starts_at">Data e horário de início</label>
+                    <input type="datetime-local" id="starts_at" name="starts_at" required>
+                </div>
 
-    <div class="giveaway-field">
-        <label for="ends_at">Data e horário de encerramento</label>
-        <input
-            type="datetime-local"
-            id="ends_at"
-            name="ends_at"
-            required
-        >
-    </div>
+                <div class="giveaway-field">
+                    <label for="ends_at">Data e horário de encerramento</label>
+                    <input type="datetime-local" id="ends_at" name="ends_at" required>
+                </div>
 
-    <button type="submit">Cadastrar sorteio</button>
-</form>
+                <div class="giveaway-field">
+                    <label for="winners">Quantidade de ganhadores</label>
+                    <input type="number" id="winners" name="winners" min="1" max="${GIVEAWAY_MAX_WINNERS}" value="1" required>
+                </div>
 
-<h2>Sorteios cadastrados</h2>
+                <button type="submit">Cadastrar sorteio</button>
+            </form>
 
-            <table>
-                <thead>
-                    <tr>
-                        <th>Título</th>
-                        <th>Status</th>
-                        <th>Início</th>
-                        <th>Encerramento</th>
-                        <th>Ações</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    ${giveawayRows || '<tr><td colspan="5">Nenhum sorteio cadastrado.</td></tr>'}
-                </tbody>
-            </table>
-            </main>
-        </body>
-        </html>
-    `);
+            <h2>Sorteios cadastrados</h2>
+
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Título</th>
+                            <th>Status</th>
+                            <th>Início</th>
+                            <th>Encerramento</th>
+                            <th>Ganhadores</th>
+                            <th>Ações</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${rows || '<tr class="empty-row"><td colspan="6">Nenhum sorteio cadastrado.</td></tr>'}
+                    </tbody>
+                </table>
+            </div>
+        `;
+
+        return res.send(renderAdminPage({
+            title: "Sorteios",
+            activePath: "/admin/giveaways",
+            content,
+            script: ADMIN_GIVEAWAY_LIST_SCRIPT
+        }));
+    } catch (error) {
+        console.error("Erro ao buscar sorteios:", error.message);
+        return res.status(500).send("Erro ao carregar sorteios.");
+    }
+});
+
+// Quantidade de ganhadores (sorteio normal e pelo chat), enquanto não foi finalizado
+app.post("/admin/giveaways/:id/ganhadores", requireAdmin, requireCsrf, async (req, res) => {
+    const winners = parseWinnersCount(req.body.winners);
+
+    if (winners === null) {
+        return res.status(400).send(`A quantidade de ganhadores deve ser de 1 a ${GIVEAWAY_MAX_WINNERS}.`);
+    }
+
+    try {
+        const { data, error } = await supabase
+            .from("giveaways")
+            .update({ winners_count: winners })
+            .eq("id", req.params.id)
+            .in("status", ["draft", "active", "closed"])
+            .is("finished_at", null)
+            .select("id, kind");
+
+        if (error) throw error;
+
+        if (!data || data.length === 0) {
+            return res.status(409).send("Este sorteio não pode mais ser alterado. Atualize a página.");
+        }
+
+        invalidateArenaState(req.params.id);
+
+        return res.redirect(data[0].kind === "chat" ? "/admin/sorteio-chat" : "/admin/giveaways");
+    } catch (error) {
+        console.error("Erro ao alterar ganhadores:", error.message);
+        return res.status(500).send("Não foi possível alterar a quantidade de ganhadores.");
+    }
+});
+
+// Finaliza manualmente: o sorteio fica concluído e a Arena não gira mais
+app.post("/admin/giveaways/:id/finalizar", requireAdmin, requireCsrf, async (req, res) => {
+    try {
+        const { data: giveaway, error: fetchError } = await supabase
+            .from("giveaways")
+            .select("id, kind, status, finished_at")
+            .eq("id", req.params.id)
+            .maybeSingle();
+
+        if (fetchError) throw fetchError;
+
+        if (!giveaway) {
+            return res.status(404).send("Sorteio não encontrado.");
+        }
+
+        const backTo = giveaway.kind === "chat" ? "/admin/sorteio-chat" : "/admin/giveaways";
+
+        if (giveaway.finished_at) {
+            return res.redirect(backTo);
+        }
+
+        if (giveaway.status !== "closed") {
+            return res.status(400).send(giveaway.kind === "chat"
+                ? "Encerre as inscrições antes de finalizar o sorteio."
+                : "Encerre a compra de tickets antes de finalizar o sorteio.");
+        }
+
+        const { data: draws, error: drawsError } = await supabase
+            .from("giveaway_draws")
+            .select("status, response_deadline_at")
+            .eq("giveaway_id", giveaway.id);
+
+        if (drawsError) throw drawsError;
+
+        if (hasPendingDraw(draws)) {
+            return res.status(409).send("Aguarde o vencedor atual responder (ou o tempo acabar) antes de finalizar.");
+        }
+
+        const { error: updateError } = await supabase
+            .from("giveaways")
+            .update({ finished_at: new Date().toISOString() })
+            .eq("id", giveaway.id)
+            .eq("status", "closed")
+            .is("finished_at", null);
+
+        if (updateError) throw updateError;
+
+        await supabase.from("audit_logs").insert({
+            twitch_id: req.session.twitchUser.id,
+            action: "giveaway_finished_manually",
+            details: { giveaway_id: giveaway.id }
+        });
+
+        invalidateArenaState(giveaway.id);
+
+        return res.redirect(backTo);
+    } catch (error) {
+        console.error("Erro ao finalizar sorteio:", error.message);
+        return res.status(500).send("Não foi possível finalizar o sorteio.");
+    }
 });
 
 // ===== Sorteio pelo chat (!euquero): painel =====
@@ -5614,7 +6006,7 @@ app.get("/admin/sorteio-chat", requireAdmin, async (req, res) => {
     try {
         const { data: giveaways, error } = await supabase
             .from("giveaways")
-            .select("id, title, status, starts_at, ends_at, winners_count, created_at")
+            .select("id, title, kind, status, starts_at, ends_at, winners_count, chat_command, finished_at, created_at")
             .eq("kind", "chat")
             .order("created_at", { ascending: false })
             .limit(30);
@@ -5623,37 +6015,25 @@ app.get("/admin/sorteio-chat", requireAdmin, async (req, res) => {
 
         const ids = (giveaways || []).map(giveaway => giveaway.id);
         const entryCounts = new Map();
-        const confirmedCounts = new Map();
-        const drawnIds = new Set();
 
-        if (ids.length > 0) {
-            const [entriesResult, drawsResult] = await Promise.all([
-                fetchAllRows((from, to) => supabase
+        const [entriesResult, drawsInfo] = await Promise.all([
+            ids.length > 0
+                ? fetchAllRows((from, to) => supabase
                     .from("chat_giveaway_entries")
                     .select("giveaway_id")
                     .in("giveaway_id", ids)
                     .order("created_at", { ascending: true })
-                    .range(from, to)),
-                supabase
-                    .from("giveaway_draws")
-                    .select("giveaway_id, status")
-                    .in("giveaway_id", ids)
-            ]);
+                    .range(from, to))
+                : [],
+            loadGiveawayDrawsInfo(ids)
+        ]);
 
-            if (drawsResult.error) throw drawsResult.error;
-
-            for (const row of entriesResult) {
-                entryCounts.set(row.giveaway_id, (entryCounts.get(row.giveaway_id) || 0) + 1);
-            }
-
-            for (const row of drawsResult.data || []) {
-                drawnIds.add(row.giveaway_id);
-
-                if (row.status === "confirmed") {
-                    confirmedCounts.set(row.giveaway_id, (confirmedCounts.get(row.giveaway_id) || 0) + 1);
-                }
-            }
+        for (const row of entriesResult) {
+            entryCounts.set(row.giveaway_id, (entryCounts.get(row.giveaway_id) || 0) + 1);
         }
+
+        const { drawsByGiveaway, namesById } = drawsInfo;
+        const csrf = escapeDashboardHtml(csrfToken);
 
         const openGiveaway = (giveaways || []).find(giveaway => giveaway.status === "active");
         const arenaButton = (id) => `
@@ -5661,10 +6041,24 @@ app.get("/admin/sorteio-chat", requireAdmin, async (req, res) => {
                 onclick="window.open('/arena/${encodeURIComponent(id)}', '_blank', 'width=950,height=750')">
                 Abrir Arena
             </button>`;
-        const actionForm = (id, action, label) => `
-            <form class="giveaway-action-form" action="/admin/sorteio-chat/${encodeURIComponent(id)}/${action}" method="POST">
-                <input type="hidden" name="_csrf" value="${escapeDashboardHtml(csrfToken)}">
+        const actionForm = (id, action, label, confirmText = "") => `
+            <form class="giveaway-action-form" action="/admin/sorteio-chat/${encodeURIComponent(id)}/${action}" method="POST"${confirmText ? ` data-confirm="${escapeDashboardHtml(confirmText)}"` : ""}>
+                <input type="hidden" name="_csrf" value="${csrf}">
                 <button type="submit">${label}</button>
+            </form>`;
+        const finishForm = (id) => `
+            <form class="giveaway-action-form" action="/admin/giveaways/${encodeURIComponent(id)}/finalizar" method="POST" data-confirm="Finalizar este sorteio? Depois disso não dá para girar de novo.">
+                <input type="hidden" name="_csrf" value="${csrf}">
+                <button type="submit">Finalizar sorteio</button>
+            </form>`;
+        const winnersForm = (giveaway) => `
+            <form class="winners-count-form" action="/admin/giveaways/${encodeURIComponent(giveaway.id)}/ganhadores" method="POST">
+                <input type="hidden" name="_csrf" value="${csrf}">
+                <label>
+                    <span>Ganhadores</span>
+                    <input type="number" name="winners" min="1" max="${GIVEAWAY_MAX_WINNERS}" value="${escapeDashboardHtml(giveaway.winners_count || 1)}" required>
+                </label>
+                <button type="submit">Salvar</button>
             </form>`;
 
         const statusText = {
@@ -5674,33 +6068,51 @@ app.get("/admin/sorteio-chat", requireAdmin, async (req, res) => {
         };
 
         const rows = (giveaways || []).map(giveaway => {
-            const confirmed = confirmedCounts.get(giveaway.id) || 0;
-            const finished = giveaway.status === "closed" && confirmed >= giveaway.winners_count;
-            const hasDraws = drawnIds.has(giveaway.id);
+            const draws = drawsByGiveaway.get(giveaway.id) || [];
+            const confirmed = confirmedDrawCount(draws);
+            const finished = isGiveawayFinished(giveaway, confirmed);
+            const hasDraws = draws.length > 0;
+            let actions = "";
+
+            if (giveaway.status === "active") {
+                actions = `
+                    ${arenaButton(giveaway.id)}
+                    ${actionForm(giveaway.id, "encerrar", "Encerrar inscrições agora")}
+                    ${!hasDraws ? actionForm(giveaway.id, "cancelar", "Cancelar", "Cancelar este sorteio?") : ""}
+                `;
+            } else if (giveaway.status === "closed" && !finished) {
+                actions = `
+                    ${arenaButton(giveaway.id)}
+                    ${winnersForm(giveaway)}
+                    ${hasPendingDraw(draws) ? "" : finishForm(giveaway.id)}
+                    ${!hasDraws ? actionForm(giveaway.id, "cancelar", "Cancelar", "Cancelar este sorteio?") : ""}
+                `;
+            }
+
+            if (hasDraws || finished) {
+                actions += adminWinnersButtonHtml(giveaway.id);
+            }
 
             return `
                 <tr>
                     <td>${escapeDashboardHtml(giveaway.title)}</td>
-                    <td>${finished ? "Concluído" : escapeDashboardHtml(statusText[giveaway.status] || giveaway.status)}</td>
+                    <td><code>${escapeDashboardHtml(chatCommandOf(giveaway))}</code></td>
+                    <td>${finished ? adminBadge("finished", GIVEAWAY_STATUS_LABELS) : escapeDashboardHtml(statusText[giveaway.status] || giveaway.status)}</td>
                     <td>${adminNumber(entryCounts.get(giveaway.id) || 0)}</td>
-                    <td>${confirmed} de ${giveaway.winners_count}</td>
+                    <td>${confirmed} de ${escapeDashboardHtml(giveaway.winners_count)}</td>
                     <td>${adminDateTime(giveaway.ends_at)}</td>
-                    <td>
-                        <div class="giveaway-actions">
-                            ${giveaway.status !== "cancelled" ? arenaButton(giveaway.id) : ""}
-                            ${giveaway.status === "active" ? actionForm(giveaway.id, "encerrar", "Encerrar inscrições agora") : ""}
-                            ${["active", "closed"].includes(giveaway.status) && !hasDraws && !finished
-                                ? actionForm(giveaway.id, "cancelar", "Cancelar") : ""}
-                        </div>
-                    </td>
-                </tr>`;
+                    <td><div class="giveaway-actions">${actions}</div></td>
+                </tr>
+                ${hasDraws || finished
+                    ? adminWinnersRowHtml({ giveaway, draws, usersById: namesById, colspan: 7 })
+                    : ""}`;
         }).join("");
 
         const chatStatus = getTwitchChatStatus();
         const chatWarning = chatStatus === "conectado" ? "" : `
             <p style="background:#3a1f1a; border:1px solid #8b493d; border-radius:10px; padding:12px 16px; color:#f0c8b8; max-width:640px;">
                 ✖ O chat da Twitch não está conectado agora${chatStatus === "reconectando" ? " (reconectando...)" : ""}.
-                Sem ele ninguém consegue se inscrever com ${CHAT_GIVEAWAY_COMMAND}.
+                Sem ele ninguém consegue se inscrever pelo chat.
                 <a href="/admin/giveaways" style="color:#e2bd7b;">Conectar o canal</a>
             </p>`;
 
@@ -5724,6 +6136,14 @@ app.get("/admin/sorteio-chat", requireAdmin, async (req, res) => {
                 </div>
 
                 <div class="giveaway-field">
+                    <label for="command">Palavra para se inscrever no chat</label>
+                    <input type="text" id="command" name="command" value="${escapeDashboardHtml(CHAT_GIVEAWAY_COMMAND)}"
+                        maxlength="30" pattern="!?[\\p{L}\\p{N}_\\-]{2,29}" placeholder="Ex: !euquero" required
+                        title="Uma palavra só, sem espaços (ex: !euquero, !rubini, !tesouro)">
+                    <small style="display:block; margin-top:6px; color:#a99578;">Uma palavra só, sem espaços. Maiúsculas e minúsculas tanto faz. Recomendo começar com ! (ex: !tesouro).</small>
+                </div>
+
+                <div class="giveaway-field">
                     <label for="minutes">Minutos para se inscrever</label>
                     <input type="number" id="minutes" name="minutes" min="1" max="${CHAT_GIVEAWAY_MAX_MINUTES}" value="3" required>
                 </div>
@@ -5742,7 +6162,7 @@ app.get("/admin/sorteio-chat", requireAdmin, async (req, res) => {
             content: `
                 <h1>Sorteio pelo chat</h1>
                 <p style="color:#c8baa4; max-width:720px; line-height:1.6;">
-                    As inscrições abrem na hora. Quem digitar <strong>${CHAT_GIVEAWAY_COMMAND}</strong> no chat da live entra no sorteio
+                    As inscrições abrem na hora. Quem digitar a palavra escolhida (ex: <strong>${escapeDashboardHtml(CHAT_GIVEAWAY_COMMAND)}</strong>) no chat da live entra no sorteio
                     (uma vez por pessoa, todos com a mesma chance, sem gastar pontos). Quando o tempo acabar, gire na Arena:
                     o vencedor tem 40 segundos para responder no chat. Quem não responder sai e você gira de novo,
                     até completar o número de ganhadores.
@@ -5753,22 +6173,26 @@ app.get("/admin/sorteio-chat", requireAdmin, async (req, res) => {
                 ${form}
 
                 <h2>Sorteios pelo chat</h2>
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Prêmio</th>
-                            <th>Situação</th>
-                            <th>Inscritos</th>
-                            <th>Ganhadores</th>
-                            <th>Fim das inscrições</th>
-                            <th>Ações</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        ${rows || '<tr><td colspan="6">Nenhum sorteio pelo chat ainda.</td></tr>'}
-                    </tbody>
-                </table>
-            `
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Prêmio</th>
+                                <th>Palavra</th>
+                                <th>Situação</th>
+                                <th>Inscritos</th>
+                                <th>Ganhadores</th>
+                                <th>Fim das inscrições</th>
+                                <th>Ações</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${rows || '<tr class="empty-row"><td colspan="7">Nenhum sorteio pelo chat ainda.</td></tr>'}
+                        </tbody>
+                    </table>
+                </div>
+            `,
+            script: ADMIN_GIVEAWAY_LIST_SCRIPT
         }));
     } catch (error) {
         console.error("Erro ao carregar sorteios pelo chat:", error.message);
@@ -5799,6 +6223,12 @@ app.post("/admin/sorteio-chat", requireAdmin, requireCsrf, async (req, res) => {
         return res.status(400).send(`A quantidade de ganhadores deve ser de 1 a ${CHAT_GIVEAWAY_MAX_WINNERS}.`);
     }
 
+    const command = normalizeChatCommand(req.body.command);
+
+    if (command === null) {
+        return res.status(400).send("A palavra do sorteio deve ser uma palavra só, sem espaços, com 2 a 30 caracteres (ex: !euquero).");
+    }
+
     try {
         const { data: open, error: openError } = await supabase
             .from("giveaways")
@@ -5825,7 +6255,8 @@ app.post("/admin/sorteio-chat", requireAdmin, requireCsrf, async (req, res) => {
                 ends_at: endsAt.toISOString(),
                 status: "active",
                 kind: "chat",
-                winners_count: winners
+                winners_count: winners,
+                chat_command: command
             })
             .select("id")
             .single();
@@ -5837,7 +6268,7 @@ app.post("/admin/sorteio-chat", requireAdmin, requireCsrf, async (req, res) => {
         await supabase.from("audit_logs").insert({
             twitch_id: req.session.twitchUser.id,
             action: "chat_giveaway_created",
-            details: { giveaway_id: created.id, minutes, winners }
+            details: { giveaway_id: created.id, minutes, winners, command }
         });
 
         return res.redirect("/admin/sorteio-chat");
@@ -6104,7 +6535,7 @@ app.post("/admin/giveaways/:id/draw", requireAdmin, requireCsrf, async (req, res
         // Confirmar que o sorteio está encerrado
         const { data: giveaway, error: giveawayError } = await supabase
             .from("giveaways")
-            .select("id, status, kind, winners_count")
+            .select("id, status, kind, winners_count, finished_at")
             .eq("id", giveawayId)
             .single();
 
@@ -6112,6 +6543,10 @@ app.post("/admin/giveaways/:id/draw", requireAdmin, requireCsrf, async (req, res
             return fail(400, giveaway?.kind === "chat"
                 ? "Aguarde o fim das inscrições para girar."
                 : "O sorteio precisa estar encerrado para ser realizado.");
+        }
+
+        if (giveaway.finished_at) {
+            return fail(400, "Este sorteio já foi finalizado.");
         }
 
         const isChatGiveaway = giveaway.kind === "chat";
@@ -6147,13 +6582,9 @@ const previousWinnerIds = new Set(
     (previousWinners || []).map(winner => winner.winner_twitch_id)
 );
 
-// Sorteio pelo chat: para quando todos os ganhadores confirmarem
-if (isChatGiveaway) {
-    const confirmedWinners = (previousWinners || []).filter(winner => winner.status === "confirmed").length;
-
-    if (confirmedWinners >= giveaway.winners_count) {
-        return fail(400, "Todos os ganhadores deste sorteio já foram confirmados.");
-    }
+// Para quando todos os ganhadores confirmarem (sorteio normal e pelo chat)
+if (confirmedDrawCount(previousWinners) >= (giveaway.winners_count || 1)) {
+    return fail(400, "Todos os ganhadores deste sorteio já foram confirmados.");
 }
 
 // Buscar todos os tickets (ou as inscrições do chat), sem depender do limite padrão
@@ -6412,26 +6843,108 @@ app.get("/giveaways", async (req, res) => {
             }
         })();
 
-        // Quantidade de tickets do usuário em cada sorteio
-        const ticketCountsPromise = Promise.all(activeGiveaways.map(async (giveaway) => {
-            const { count, error: countError } = await supabase
-                .from("tickets")
-                .select("id", { count: "exact", head: true })
-                .eq("giveaway_id", giveaway.id)
-                .eq("twitch_id", sessionUser.id);
+        // Tickets do usuário em todos os sorteios (paginado). Se falhar, a página
+        // continua e mostra "—" no lugar da quantidade.
+        const userTicketsPromise = (async () => {
+            const rows = [];
 
-            if (countError) {
-                console.error("Erro ao contar tickets do usuário:", countError.message);
-                return null;
+            for (let from = 0; from < 100000; from += 1000) {
+                const { data, error: ticketsError } = await supabase
+                    .from("tickets")
+                    .select("ticket_number, giveaway_id")
+                    .eq("twitch_id", sessionUser.id)
+                    .order("ticket_number", { ascending: true })
+                    .range(from, from + 999);
+
+                if (ticketsError) throw ticketsError;
+
+                rows.push(...(data || []));
+                if (!data || data.length < 1000) break;
             }
 
-            return count || 0;
-        }));
+            return rows;
+        })().catch(ticketsError => {
+            console.error("Erro ao buscar os tickets do usuário:", ticketsError.message);
+            return null;
+        });
 
-        const [userPoints, ticketCounts] = await Promise.all([
-            userPointsPromise,
-            ticketCountsPromise
+        // Pontos gastos e vitórias do usuário (complementares: se falharem, ficam zerados)
+        const historyPromise = Promise.all([
+            supabase
+                .from("transactions")
+                .select("giveaway_id, points_spent")
+                .eq("twitch_id", sessionUser.id)
+                .eq("status", "completed"),
+            supabase
+                .from("giveaway_draws")
+                .select("giveaway_id")
+                .eq("winner_twitch_id", sessionUser.id)
+                .eq("status", "confirmed")
         ]);
+
+        const [userPoints, userTickets, [transactionsResult, winsResult]] = await Promise.all([
+            userPointsPromise,
+            userTicketsPromise,
+            historyPromise
+        ]);
+
+        if (transactionsResult.error) console.error("Erro ao buscar pontos gastos:", transactionsResult.error.message);
+        if (winsResult.error) console.error("Erro ao buscar vitórias:", winsResult.error.message);
+
+        const ticketsByGiveaway = new Map();
+
+        for (const ticket of userTickets || []) {
+            if (!ticketsByGiveaway.has(ticket.giveaway_id)) ticketsByGiveaway.set(ticket.giveaway_id, []);
+            ticketsByGiveaway.get(ticket.giveaway_id).push(ticket);
+        }
+
+        const ticketCounts = activeGiveaways.map(giveaway =>
+            userTickets === null ? null : (ticketsByGiveaway.get(giveaway.id) || []).length
+        );
+
+        const pointsByGiveaway = new Map();
+
+        for (const transaction of transactionsResult.data || []) {
+            pointsByGiveaway.set(
+                transaction.giveaway_id,
+                (pointsByGiveaway.get(transaction.giveaway_id) || 0) + Number(transaction.points_spent || 0)
+            );
+        }
+
+        const wonGiveaways = new Set((winsResult.data || []).map(draw => draw.giveaway_id));
+
+        // Sorteios anteriores em que o usuário tem tickets
+        const activeIds = new Set(activeGiveaways.map(giveaway => giveaway.id));
+        const pastIds = [...ticketsByGiveaway.keys()].filter(id => !activeIds.has(id));
+        let pastGiveaways = [];
+
+        if (pastIds.length > 0) {
+            const { data: pastData, error: pastError } = await supabase
+                .from("giveaways")
+                .select("id, title, status, ends_at")
+                .in("id", pastIds);
+
+            if (pastError) {
+                console.error("Erro ao buscar sorteios anteriores:", pastError.message);
+            } else {
+                pastGiveaways = pastData || [];
+            }
+        }
+
+        const pastById = new Map(pastGiveaways.map(giveaway => [giveaway.id, giveaway]));
+        const pastGroups = pastIds
+            .map(id => {
+                const giveaway = pastById.get(id) || {};
+                return {
+                    title: giveaway.title || "Sorteio não encontrado",
+                    status: giveaway.status || "",
+                    endsAt: giveaway.ends_at || null,
+                    tickets: ticketsByGiveaway.get(id),
+                    points: pointsByGiveaway.get(id) || 0,
+                    won: wonGiveaways.has(id)
+                };
+            })
+            .sort((a, b) => new Date(b.endsAt || 0) - new Date(a.endsAt || 0));
 
         const price = Number(pointsPerTicket);
         const formatPoints = (value) => Number(value).toLocaleString("pt-BR");
@@ -6449,10 +6962,68 @@ app.get("/giveaways", async (req, res) => {
                 "'": "&#39;"
             })[char]);
 
+        const renderTicketNumbers = (groupTickets) => `
+            <div class="ticket-number-grid">
+                ${groupTickets.map(ticket => `
+                    <div class="ticket-number">
+                        <span>✦</span>
+                        <strong>#${escapeGiveawayText(ticket.ticket_number)}</strong>
+                    </div>
+                `).join("")}
+            </div>
+        `;
+
+        const formatDay = (value) => value
+            ? new Date(value).toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" })
+            : "—";
+
+        const pastStatusLabels = {
+            closed: ["ENCERRADO", "ticket-status-closed"],
+            cancelled: ["CANCELADO", "ticket-status-other"],
+            draft: ["EM BREVE", "ticket-status-other"],
+            active: ["ENCERRADO", "ticket-status-closed"]
+        };
+
+        const pastSections = pastGroups.map(group => {
+            const [statusLabel, statusClass] = pastStatusLabels[group.status] || ["—", "ticket-status-other"];
+
+            return `
+                <details class="past-ticket-card">
+                    <summary>
+                        <div class="past-ticket-title">
+                            <strong>${escapeGiveawayText(group.title)}</strong>
+                            <span>Encerrado em ${escapeGiveawayText(formatDay(group.endsAt))} · toque para ver seus tickets</span>
+                        </div>
+
+                        <div class="past-ticket-meta">
+                            ${group.won ? `<span class="ticket-status ticket-status-won">🏆 VOCÊ VENCEU</span>` : ""}
+                            <span class="ticket-status ${statusClass}">${statusLabel}</span>
+                        </div>
+
+                        <div class="past-ticket-numbers">
+                            <div>
+                                <span>Tickets</span>
+                                <strong>${formatPoints(group.tickets.length)}</strong>
+                            </div>
+                            <div>
+                                <span>Pontos gastos</span>
+                                <strong>${formatPoints(group.points)}</strong>
+                            </div>
+                        </div>
+                    </summary>
+
+                    <div class="past-ticket-body">
+                        ${renderTicketNumbers(group.tickets)}
+                    </div>
+                </details>
+            `;
+        }).join("");
+
         const giveawayCards = activeGiveaways.map((giveaway, index) => {
             const purchaseKey = crypto.randomUUID();
             const quantityId = `quantity-${escapeGiveawayText(giveaway.id)}`;
             const userTickets = ticketCounts[index];
+            const myTickets = ticketsByGiveaway.get(giveaway.id) || [];
 
             return `
                 <article
@@ -6483,6 +7054,18 @@ app.get("/giveaways", async (req, res) => {
                             <strong>${userTickets === null ? "—" : formatPoints(userTickets)}</strong>
                         </div>
                     </div>
+
+                    ${myTickets.length > 0 ? `
+                        <details class="my-tickets-toggle">
+                            <summary>
+                                <span>🎟 Ver meus tickets neste sorteio</span>
+                                <small>${formatPoints(myTickets.length)} ${myTickets.length === 1 ? "ticket" : "tickets"} · ${formatPoints(pointsByGiveaway.get(giveaway.id) || 0)} pontos investidos</small>
+                            </summary>
+                            <div class="my-tickets-toggle-body">
+                                ${renderTicketNumbers(myTickets)}
+                            </div>
+                        </details>
+                    ` : ""}
 
                     <div class="giveaway-purchase-area">
                         <div class="giveaway-wallet">
@@ -6970,6 +7553,255 @@ app.get("/giveaways", async (req, res) => {
                         transform: translateY(-2px);
                     }
 
+                    .giveaways-section-title {
+                        margin: 0 0 16px;
+                        color: #e2bd76;
+                        font-size: 20px;
+                        letter-spacing: .5px;
+                    }
+
+                    .past-giveaways {
+                        margin-top: 38px;
+                    }
+
+                    /* Meus tickets dentro do cartão do sorteio */
+                    .my-tickets-toggle {
+                        margin: 0 22px 22px;
+                        background: rgba(0,0,0,.22);
+                        border: 1px solid #806039;
+                        border-radius: 7px;
+                    }
+
+                    .my-tickets-toggle[open] {
+                        border-color: #d6a85c;
+                    }
+
+                    .my-tickets-toggle summary {
+                        display: flex;
+                        flex-direction: column;
+                        gap: 4px;
+                        padding: 12px 14px;
+                        cursor: pointer;
+                        list-style: none;
+                    }
+
+                    .my-tickets-toggle summary::-webkit-details-marker {
+                        display: none;
+                    }
+
+                    .my-tickets-toggle summary span {
+                        color: #e2bd7b;
+                        font-weight: bold;
+                        font-size: 14px;
+                    }
+
+                    .my-tickets-toggle summary span::after {
+                        content: " ▸";
+                        color: #a99578;
+                    }
+
+                    .my-tickets-toggle[open] summary span::after {
+                        content: " ▾";
+                    }
+
+                    .my-tickets-toggle summary small {
+                        color: #a99578;
+                        font-size: 12px;
+                    }
+
+                    .my-tickets-toggle-body {
+                        max-height: 260px;
+                        overflow-y: auto;
+                        padding: 4px 14px 14px;
+                    }
+
+                    .ticket-number-grid {
+                        display: grid;
+                        grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+                        gap: 10px;
+                    }
+
+                    .ticket-number {
+                        display: flex;
+                        flex-direction: column;
+                        align-items: center;
+                        justify-content: center;
+                        gap: 4px;
+                        min-height: 58px;
+                        padding: 8px;
+                        box-sizing: border-box;
+                        background: linear-gradient(145deg, #e2bd76, #a77a3d);
+                        border: 1px solid #f0d49b;
+                        border-radius: 7px;
+                        box-shadow: inset 0 1px 3px rgba(255,255,255,.2), 0 3px 8px rgba(0,0,0,.25);
+                        color: #21170c;
+                    }
+
+                    .ticket-number span {
+                        font-size: 11px;
+                    }
+
+                    .ticket-number strong {
+                        font-size: 16px;
+                    }
+
+                    /* Sorteios anteriores */
+                    .ticket-status {
+                        padding: 8px 12px;
+                        border: 1px solid #806039;
+                        border-radius: 5px;
+                        font-size: 10px;
+                        font-weight: bold;
+                        letter-spacing: 1px;
+                        white-space: nowrap;
+                    }
+
+                    .ticket-status-closed {
+                        color: #d4b88b;
+                        background: rgba(120,91,55,.2);
+                    }
+
+                    .ticket-status-other {
+                        color: #c8baa4;
+                    }
+
+                    .ticket-status-won {
+                        color: #f0d49b;
+                        border-color: #c99b53;
+                        background: rgba(201,155,83,.18);
+                    }
+
+                    .past-tickets-empty {
+                        margin: 0 0 10px;
+                        color: #c8baa4;
+                        font-style: italic;
+                    }
+
+                    .past-ticket-card {
+                        margin-bottom: 12px;
+                        background: linear-gradient(145deg, #2a2018, #1d1712);
+                        border: 1px solid #5e4529;
+                        border-radius: 9px;
+                    }
+
+                    .past-ticket-card[open] {
+                        border-color: #8b683c;
+                    }
+
+                    .past-ticket-card summary {
+                        display: grid;
+                        grid-template-columns: 1fr auto auto;
+                        align-items: center;
+                        gap: 16px;
+                        padding: 16px 20px;
+                        cursor: pointer;
+                        list-style: none;
+                    }
+
+                    .past-ticket-card summary::-webkit-details-marker {
+                        display: none;
+                    }
+
+                    .past-ticket-title {
+                        display: flex;
+                        flex-direction: column;
+                        gap: 4px;
+                        min-width: 0;
+                    }
+
+                    .past-ticket-title strong {
+                        color: #e7c586;
+                        font-size: 17px;
+                        overflow-wrap: anywhere;
+                    }
+
+                    .past-ticket-title strong::before {
+                        content: "▸ ";
+                        color: #a99578;
+                    }
+
+                    .past-ticket-card[open] .past-ticket-title strong::before {
+                        content: "▾ ";
+                    }
+
+                    .past-ticket-title span {
+                        color: #a99578;
+                        font-size: 12px;
+                    }
+
+                    .past-ticket-meta {
+                        display: flex;
+                        flex-wrap: wrap;
+                        gap: 6px;
+                        justify-content: flex-end;
+                    }
+
+                    .past-ticket-numbers {
+                        display: flex;
+                        gap: 18px;
+                    }
+
+                    .past-ticket-numbers div {
+                        display: flex;
+                        flex-direction: column;
+                        align-items: flex-end;
+                        gap: 3px;
+                    }
+
+                    .past-ticket-numbers span {
+                        color: #a99578;
+                        font-size: 10px;
+                        font-weight: bold;
+                        letter-spacing: 1px;
+                        text-transform: uppercase;
+                    }
+
+                    .past-ticket-numbers strong {
+                        color: #e8dfcf;
+                        font-size: 18px;
+                    }
+
+                    .past-ticket-body {
+                        padding: 16px 20px 20px;
+                        border-top: 1px solid rgba(198,157,92,.2);
+                    }
+
+                    .past-ticket-body .ticket-number {
+                        background: linear-gradient(145deg, #8a734e, #5e4a2e);
+                        border-color: #a48a5e;
+                        color: #f0e4cc;
+                    }
+
+                    @media(max-width: 600px) {
+                        .my-tickets-toggle {
+                            margin-left: 16px;
+                            margin-right: 16px;
+                        }
+
+                        .ticket-number-grid {
+                            grid-template-columns: repeat(3, minmax(0, 1fr));
+                            gap: 8px;
+                        }
+
+                        .past-ticket-card summary {
+                            grid-template-columns: 1fr;
+                            gap: 10px;
+                            padding: 14px 16px;
+                        }
+
+                        .past-ticket-meta {
+                            justify-content: flex-start;
+                        }
+
+                        .past-ticket-numbers div {
+                            align-items: flex-start;
+                        }
+
+                        .past-ticket-body {
+                            padding: 14px 16px 16px;
+                        }
+                    }
+
                     @media(max-width: 600px) {
                         .giveaways-page {
                             width: calc(100% - 24px);
@@ -7015,7 +7847,8 @@ app.get("/giveaways", async (req, res) => {
 
             <body>
                 <main class="giveaways-page">
-                    <h1 class="giveaways-title">Sorteios disponíveis</h1>
+                    <h1 class="giveaways-title">Sorteios</h1>
+                    <h2 class="giveaways-section-title">✦ Disponíveis agora</h2>
 
                     ${
                         giveaways && giveaways.length > 0
@@ -7031,6 +7864,13 @@ app.get("/giveaways", async (req, res) => {
                                 </section>
                             `
                     }
+
+                    <section id="meus-sorteios" class="past-giveaways">
+                        <h2 class="giveaways-section-title">✦ Sorteios que você participou</h2>
+                        ${userTickets === null
+                            ? `<p class="past-tickets-empty">Não foi possível carregar seus tickets agora. Tente atualizar a página.</p>`
+                            : pastSections || `<p class="past-tickets-empty">Você ainda não participou de sorteios anteriores.</p>`}
+                    </section>
 
                     <footer class="giveaways-footer">
                         <a href="/dashboard">VOLTAR AO PAINEL</a>
@@ -7974,713 +8814,17 @@ async function removeStreamElementsPoints(channelId, username, amount) {
     }
 }
 
-app.get("/my-tickets", async (req, res) => {
-    if (!req.session.twitchUser) {
-        return res.redirect("/");
-    }
-
-    try {
-        const twitchId = req.session.twitchUser.id;
-
-        // Buscar somente os tickets do usuário conectado (paginado)
-        const tickets = [];
-
-        for (let from = 0; from < 100000; from += 1000) {
-            const { data, error: ticketsError } = await supabase
-                .from("tickets")
-                .select("ticket_number, created_at, giveaway_id")
-                .eq("twitch_id", twitchId)
-                .order("ticket_number", { ascending: true })
-                .range(from, from + 999);
-
-            if (ticketsError) {
-                throw ticketsError;
-            }
-
-            tickets.push(...(data || []));
-
-            if (!data || data.length < 1000) {
-                break;
-            }
-        }
-
-        // Escapar textos para evitar inserção de HTML
-        const escapeHtml = (value) =>
-            String(value ?? "").replace(/[&<>"']/g, char => ({
-                "&": "&amp;",
-                "<": "&lt;",
-                ">": "&gt;",
-                '"': "&quot;",
-                "'": "&#39;"
-            })[char]);
-
-        const formatNumber = (value) => Number(value || 0).toLocaleString("pt-BR");
-        const formatDate = (value) => value
-            ? new Date(value).toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" })
-            : "—";
-
-        // Sorteios dos tickets + sorteios em andamento, pontos gastos e vitórias
-        const giveawayIds = [...new Set(tickets.map(ticket => ticket.giveaway_id))];
-
-        const [giveawaysResult, activeResult, transactionsResult, winsResult] = await Promise.all([
-            giveawayIds.length > 0
-                ? supabase.from("giveaways").select("id, title, status, ends_at").in("id", giveawayIds)
-                : Promise.resolve({ data: [], error: null }),
-            supabase
-                .from("giveaways")
-                .select("id, title, status, ends_at")
-                .eq("status", "active")
-                .eq("kind", "tickets")
-                .order("ends_at", { ascending: true }),
-            supabase
-                .from("transactions")
-                .select("giveaway_id, points_spent")
-                .eq("twitch_id", twitchId)
-                .eq("status", "completed"),
-            supabase
-                .from("giveaway_draws")
-                .select("giveaway_id")
-                .eq("winner_twitch_id", twitchId)
-                .eq("status", "confirmed")
-        ]);
-
-        if (giveawaysResult.error) throw giveawaysResult.error;
-        if (activeResult.error) throw activeResult.error;
-
-        // Pontos e vitórias são complementares: se falharem, a página continua
-        if (transactionsResult.error) console.error("Erro ao buscar pontos gastos:", transactionsResult.error.message);
-        if (winsResult.error) console.error("Erro ao buscar vitórias:", winsResult.error.message);
-
-        const giveawayMap = new Map();
-        for (const giveaway of [...(giveawaysResult.data || []), ...(activeResult.data || [])]) {
-            giveawayMap.set(giveaway.id, giveaway);
-        }
-
-        const pointsByGiveaway = new Map();
-        for (const transaction of transactionsResult.data || []) {
-            pointsByGiveaway.set(
-                transaction.giveaway_id,
-                (pointsByGiveaway.get(transaction.giveaway_id) || 0) + Number(transaction.points_spent || 0)
-            );
-        }
-
-        const wonGiveaways = new Set((winsResult.data || []).map(draw => draw.giveaway_id));
-
-        // Agrupar tickets por sorteio
-        const ticketsByGiveaway = new Map();
-        for (const ticket of tickets) {
-            if (!ticketsByGiveaway.has(ticket.giveaway_id)) {
-                ticketsByGiveaway.set(ticket.giveaway_id, []);
-            }
-            ticketsByGiveaway.get(ticket.giveaway_id).push(ticket);
-        }
-
-        const activeGiveaways = activeResult.data || [];
-        const activeIds = new Set(activeGiveaways.map(giveaway => giveaway.id));
-
-        const pastGroups = [...ticketsByGiveaway.entries()]
-            .filter(([giveawayId]) => !activeIds.has(giveawayId))
-            .map(([giveawayId, groupTickets]) => {
-                const giveaway = giveawayMap.get(giveawayId) || {};
-                return {
-                    title: giveaway.title || "Sorteio não encontrado",
-                    status: giveaway.status || "",
-                    endsAt: giveaway.ends_at || null,
-                    tickets: groupTickets,
-                    points: pointsByGiveaway.get(giveawayId) || 0,
-                    won: wonGiveaways.has(giveawayId)
-                };
-            })
-            .sort((a, b) => new Date(b.endsAt || 0) - new Date(a.endsAt || 0));
-
-        const renderTicketNumbers = (groupTickets) => `
-            <div class="ticket-number-grid">
-                ${groupTickets.map(ticket => `
-                    <div class="ticket-number">
-                        <span>✦</span>
-                        <strong>#${escapeHtml(ticket.ticket_number)}</strong>
-                    </div>
-                `).join("")}
-            </div>
-        `;
-
-        // Sorteio(s) em andamento
-        const currentSections = activeGiveaways.length === 0
-            ? `
-                <section class="tickets-empty">
-                    <span class="tickets-empty-symbol">✦</span>
-                    <h2>Nenhum sorteio em andamento</h2>
-                    <p>Fique de olho! Novos tesouros podem surgir em breve.</p>
-                </section>
-            `
-            : activeGiveaways.map(giveaway => {
-                const groupTickets = ticketsByGiveaway.get(giveaway.id) || [];
-
-                return `
-                    <section class="ticket-giveaway-card">
-                        <div class="ticket-card-header">
-                            <div>
-                                <span class="ticket-eyebrow">SORTEIO EM ANDAMENTO</span>
-                                <h2>${escapeHtml(giveaway.title)}</h2>
-                            </div>
-
-                            <span class="ticket-status ticket-status-active">ATIVO</span>
-                        </div>
-
-                        <div class="ticket-card-stats">
-                            <div>
-                                <span>Seus tickets</span>
-                                <strong>${formatNumber(groupTickets.length)}</strong>
-                            </div>
-                            <div>
-                                <span>Pontos investidos</span>
-                                <strong>${formatNumber(pointsByGiveaway.get(giveaway.id) || 0)}</strong>
-                            </div>
-                            <div>
-                                <span>Encerra em</span>
-                                <strong>${escapeHtml(formatDate(giveaway.ends_at))}</strong>
-                            </div>
-                        </div>
-
-                        ${groupTickets.length > 0
-                            ? renderTicketNumbers(groupTickets)
-                            : `<p class="ticket-card-empty">Você ainda não tem tickets neste sorteio.</p>`}
-
-                        <a href="/giveaways" class="ticket-buy-more">
-                            ✦ ${groupTickets.length > 0 ? "COMPRAR MAIS TICKETS" : "COMPRAR TICKETS"} ✦
-                        </a>
-                    </section>
-                `;
-            }).join("");
-
-        // Sorteios anteriores
-        const pastStatusLabels = {
-            closed: ["ENCERRADO", "ticket-status-closed"],
-            cancelled: ["CANCELADO", "ticket-status-other"],
-            draft: ["EM BREVE", "ticket-status-other"]
-        };
-
-        const pastSections = pastGroups.length === 0
-            ? `<p class="past-tickets-empty">Você ainda não participou de sorteios anteriores.</p>`
-            : pastGroups.map(group => {
-                const [statusLabel, statusClass] = pastStatusLabels[group.status] || ["—", "ticket-status-other"];
-
-                return `
-                    <details class="past-ticket-card">
-                        <summary>
-                            <div class="past-ticket-title">
-                                <strong>${escapeHtml(group.title)}</strong>
-                                <span>Encerrado em ${escapeHtml(formatDate(group.endsAt))}</span>
-                            </div>
-
-                            <div class="past-ticket-meta">
-                                ${group.won ? `<span class="ticket-status ticket-status-won">🏆 VOCÊ VENCEU</span>` : ""}
-                                <span class="ticket-status ${statusClass}">${statusLabel}</span>
-                            </div>
-
-                            <div class="past-ticket-numbers">
-                                <div>
-                                    <span>Tickets</span>
-                                    <strong>${formatNumber(group.tickets.length)}</strong>
-                                </div>
-                                <div>
-                                    <span>Pontos gastos</span>
-                                    <strong>${formatNumber(group.points)}</strong>
-                                </div>
-                            </div>
-                        </summary>
-
-                        <div class="past-ticket-body">
-                            ${renderTicketNumbers(group.tickets)}
-                        </div>
-                    </details>
-                `;
-            }).join("");
-
-        return res.send(withPublicSidebar(req, `
-            <!DOCTYPE html>
-            <html lang="pt-BR">
-            <head>
-                <meta charset="UTF-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <title>Meus Tickets - Weirdo's Treasure</title>
-                <link rel="stylesheet" href="/css/home.css">
-
-                <style>
-                    .my-tickets-page {
-                        width: min(100% - 40px, 1000px);
-                        margin: 45px auto;
-                    }
-
-                    .my-tickets-header {
-                        margin-bottom: 30px;
-                        padding: 28px;
-                        background: linear-gradient(145deg, #30251b, #1d1712);
-                        border: 2px solid #8b683c;
-                        border-radius: 10px;
-                        box-shadow: 0 8px 25px rgba(0,0,0,.3);
-                    }
-
-                    .my-tickets-eyebrow,
-                    .ticket-eyebrow {
-                        color: #d6ad69;
-                        font-size: 11px;
-                        letter-spacing: 2px;
-                        font-weight: bold;
-                    }
-
-                    .my-tickets-header h1 {
-                        margin: 12px 0;
-                        color: #e2bd76;
-                        font-size: clamp(26px, 4vw, 36px);
-                    }
-
-                    .my-tickets-header p {
-                        margin: 0;
-                        color: #c8baa4;
-                        line-height: 1.6;
-                    }
-
-                    .my-tickets-total {
-                        display: inline-flex;
-                        align-items: center;
-                        gap: 10px;
-                        margin-top: 22px;
-                        padding: 12px 17px;
-                        background: rgba(0,0,0,.25);
-                        border: 1px solid #806039;
-                        border-radius: 7px;
-                        color: #e2bd76;
-                    }
-
-                    .my-tickets-total strong {
-                        font-size: 23px;
-                        color: #f0dfbd;
-                    }
-
-                    .ticket-giveaway-card {
-                        margin-bottom: 22px;
-                        padding: 25px;
-                        background: linear-gradient(145deg, #30251b, #1d1712);
-                        border: 1px solid #8b683c;
-                        border-radius: 10px;
-                        box-shadow: 0 6px 18px rgba(0,0,0,.3);
-                    }
-
-                    .ticket-card-header {
-                        display: flex;
-                        align-items: flex-start;
-                        justify-content: space-between;
-                        gap: 15px;
-                        padding-bottom: 20px;
-                        border-bottom: 1px solid rgba(198,157,92,.3);
-                    }
-
-                    .ticket-card-header h2 {
-                        margin: 9px 0 0;
-                        color: #e7c586;
-                        font-size: 21px;
-                        overflow-wrap: anywhere;
-                    }
-
-                    .ticket-status {
-                        padding: 8px 12px;
-                        border: 1px solid #806039;
-                        border-radius: 5px;
-                        font-size: 10px;
-                        font-weight: bold;
-                        letter-spacing: 1px;
-                        white-space: nowrap;
-                    }
-
-                    .ticket-status-active {
-                        color: #a8d69a;
-                        border-color: #557b48;
-                        background: rgba(72,117,56,.18);
-                    }
-
-                    .ticket-status-closed {
-                        color: #d4b88b;
-                        background: rgba(120,91,55,.2);
-                    }
-
-                    .ticket-status-other {
-                        color: #c8baa4;
-                    }
-
-                    .ticket-card-summary {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin: 20px 0 35px;
-    padding-bottom: 20px;
-    border-bottom: 1px solid rgba(198,157,92,.3);
-    color: #c8baa4;
-}
-
-                    .ticket-card-summary strong {
-                        color: #e2bd76;
-                        font-size: 23px;
-                    }
-
-                    .ticket-number-grid {
-                        display: grid;
-                        grid-template-columns: repeat(auto-fill, minmax(95px, 1fr));
-                        gap: 12px;
-                    }
-
-                    .ticket-number {
-                        display: flex;
-                        flex-direction: column;
-                        align-items: center;
-                        justify-content: center;
-                        gap: 5px;
-                        min-height: 65px;
-                        padding: 10px;
-                        box-sizing: border-box;
-                        background: linear-gradient(145deg, #e2bd76, #a77a3d);
-                        border: 1px solid #f0d49b;
-                        border-radius: 7px;
-                        box-shadow: inset 0 1px 3px rgba(255,255,255,.2),
-                                    0 3px 8px rgba(0,0,0,.25);
-                        color: #21170c;
-                    }
-
-                    .ticket-number span {
-                        font-size: 12px;
-                    }
-
-                    .ticket-number strong {
-                        font-size: 17px;
-                    }
-
-                    .tickets-empty {
-                        padding: 45px 25px;
-                        text-align: center;
-                        background: linear-gradient(145deg, #30251b, #1d1712);
-                        border: 1px dashed #8b683c;
-                        border-radius: 10px;
-                    }
-
-                    .tickets-empty-symbol {
-                        display: block;
-                        margin-bottom: 15px;
-                        color: #d6ad69;
-                        font-size: 42px;
-                    }
-
-                    .tickets-empty h2 {
-                        color: #e2bd76;
-                    }
-
-                    .tickets-empty p {
-                        color: #c8baa4;
-                        line-height: 1.6;
-                    }
-
-                    .my-tickets-navigation {
-                        display: flex;
-                        flex-wrap: wrap;
-                        gap: 12px;
-                        margin-top: 28px;
-                    }
-
-                    .my-tickets-navigation a {
-                        display: inline-flex;
-                        align-items: center;
-                        justify-content: center;
-                        min-height: 44px;
-                        padding: 12px 20px;
-                        box-sizing: border-box;
-                        background: linear-gradient(180deg, #e2bd76, #a77a3d);
-                        border: 1px solid #f0d49b;
-                        border-radius: 6px;
-                        color: #21170c;
-                        font-size: 13px;
-                        font-weight: bold;
-                        letter-spacing: .5px;
-                        text-decoration: none;
-                        transition: filter .2s, transform .2s;
-                    }
-
-                    .my-tickets-navigation a:hover {
-                        filter: brightness(1.15);
-                        transform: translateY(-2px);
-                    }
-
-                    .my-tickets-navigation .secondary-link {
-                        background: linear-gradient(145deg, #30251b, #1d1712);
-                        border-color: #806039;
-                        color: #e2bd76;
-                    }
-
-                    .my-tickets-section-title {
-                        margin: 0 0 16px;
-                        color: #e2bd76;
-                        font-size: 20px;
-                        letter-spacing: .5px;
-                    }
-
-                    .my-tickets-section-past {
-                        margin-top: 38px;
-                    }
-
-                    .ticket-card-stats {
-                        display: grid;
-                        grid-template-columns: repeat(3, minmax(0, 1fr));
-                        gap: 10px;
-                        margin: 20px 0 24px;
-                    }
-
-                    .ticket-card-stats div {
-                        display: flex;
-                        flex-direction: column;
-                        gap: 6px;
-                        padding: 12px 14px;
-                        background: rgba(0,0,0,.22);
-                        border: 1px solid #51402a;
-                        border-radius: 7px;
-                    }
-
-                    .ticket-card-stats span,
-                    .past-ticket-numbers span {
-                        color: #a99578;
-                        font-size: 10px;
-                        font-weight: bold;
-                        letter-spacing: 1px;
-                        text-transform: uppercase;
-                    }
-
-                    .ticket-card-stats strong {
-                        color: #e2bd76;
-                        font-size: 20px;
-                    }
-
-                    .ticket-card-empty,
-                    .past-tickets-empty {
-                        margin: 0 0 10px;
-                        color: #c8baa4;
-                        font-style: italic;
-                    }
-
-                    .ticket-status-won {
-                        color: #f0d49b;
-                        border-color: #c99b53;
-                        background: rgba(201,155,83,.18);
-                    }
-
-                    .past-ticket-card {
-                        margin-bottom: 12px;
-                        background: linear-gradient(145deg, #2a2018, #1d1712);
-                        border: 1px solid #5e4529;
-                        border-radius: 9px;
-                    }
-
-                    .past-ticket-card[open] {
-                        border-color: #8b683c;
-                    }
-
-                    .past-ticket-card summary {
-                        display: grid;
-                        grid-template-columns: 1fr auto auto;
-                        align-items: center;
-                        gap: 16px;
-                        padding: 16px 20px;
-                        cursor: pointer;
-                        list-style: none;
-                    }
-
-                    .past-ticket-card summary::-webkit-details-marker {
-                        display: none;
-                    }
-
-                    .past-ticket-title {
-                        display: flex;
-                        flex-direction: column;
-                        gap: 4px;
-                        min-width: 0;
-                    }
-
-                    .past-ticket-title strong {
-                        color: #e7c586;
-                        font-size: 17px;
-                        overflow-wrap: anywhere;
-                    }
-
-                    .past-ticket-title strong::before {
-                        content: "▸ ";
-                        color: #a99578;
-                    }
-
-                    .past-ticket-card[open] .past-ticket-title strong::before {
-                        content: "▾ ";
-                    }
-
-                    .past-ticket-title span {
-                        color: #a99578;
-                        font-size: 12px;
-                    }
-
-                    .past-ticket-meta {
-                        display: flex;
-                        flex-wrap: wrap;
-                        gap: 6px;
-                        justify-content: flex-end;
-                    }
-
-                    .past-ticket-numbers {
-                        display: flex;
-                        gap: 18px;
-                    }
-
-                    .past-ticket-numbers div {
-                        display: flex;
-                        flex-direction: column;
-                        align-items: flex-end;
-                        gap: 3px;
-                    }
-
-                    .past-ticket-numbers strong {
-                        color: #e8dfcf;
-                        font-size: 18px;
-                    }
-
-                    .past-ticket-body {
-                        padding: 4px 20px 20px;
-                        border-top: 1px solid rgba(198,157,92,.2);
-                        padding-top: 16px;
-                    }
-
-                    .past-ticket-body .ticket-number {
-                        background: linear-gradient(145deg, #8a734e, #5e4a2e);
-                        border-color: #a48a5e;
-                        color: #f0e4cc;
-                    }
-
-                    @media(max-width: 600px) {
-                        .ticket-card-stats {
-                            grid-template-columns: 1fr 1fr;
-                        }
-
-                        .ticket-card-stats div:last-child {
-                            grid-column: 1 / -1;
-                        }
-
-                        .past-ticket-card summary {
-                            grid-template-columns: 1fr;
-                            gap: 10px;
-                            padding: 14px 16px;
-                        }
-
-                        .past-ticket-meta {
-                            justify-content: flex-start;
-                        }
-
-                        .past-ticket-numbers div {
-                            align-items: flex-start;
-                        }
-
-                        .past-ticket-body {
-                            padding: 14px 16px 16px;
-                        }
-                    }
-
-                    @media(max-width: 600px) {
-                        .my-tickets-page {
-                            width: calc(100% - 24px);
-                            margin: 25px auto;
-                        }
-
-                        .my-tickets-header,
-                        .ticket-giveaway-card {
-                            padding: 20px;
-                        }
-
-                        .ticket-card-header {
-                            flex-direction: column;
-                        }
-
-                        .ticket-number-grid {
-                            grid-template-columns: repeat(3, minmax(0, 1fr));
-                            gap: 8px;
-                        }
-
-                        .my-tickets-navigation {
-                            flex-direction: column;
-                        }
-
-                        .my-tickets-navigation a {
-                            width: 100%;
-                        }
-                    }
-                        .ticket-buy-more {
-                        margin-top: 15px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    min-height: 44px;
-    margin-bottom: 20px;
-    padding: 10px 16px;
-    box-sizing: border-box;
-    background: linear-gradient(180deg, #e2bd76, #a77a3d);
-    border: 1px solid #f0d49b;
-    border-radius: 6px;
-    color: #21170c;
-    font-size: 12px;
-    font-weight: bold;
-    letter-spacing: 1px;
-    text-decoration: none;
-    transition: filter .2s, transform .2s;
-}
-
-.ticket-buy-more:hover {
-    filter: brightness(1.15);
-    transform: translateY(-2px);
-}
-
-                </style>
-            </head>
-
-            <body>
-                <main class="my-tickets-page">
-                    <header class="my-tickets-header">
-                        <span class="my-tickets-eyebrow">WEIRDO'S TREASURE</span>
-
-                        <h1>Meus Tickets</h1>
-
-                        <p>
-                            Olá, ${escapeHtml(req.session.twitchUser.displayName)}!
-                            Aqui estão os tickets que você conquistou em suas aventuras.
-                        </p>
-                    </header>
-
-                    <h2 class="my-tickets-section-title">✦ Sorteio disponível</h2>
-                    ${currentSections}
-
-                    <h2 class="my-tickets-section-title my-tickets-section-past">✦ Sorteios anteriores</h2>
-                    ${pastSections}
-
-                    <nav class="my-tickets-navigation">
-                        <a href="/dashboard" class="secondary-link">VOLTAR AO PAINEL</a>
-                    </nav>
-                </main>
-            </body>
-            </html>
-        `, "/my-tickets"));
-
-    } catch (error) {
-        console.error("Erro ao carregar meus tickets:", error);
-        return res.status(500).send("Não foi possível carregar seus tickets.");
-    }
+// "Meus tickets" agora fica dentro da página de sorteios
+app.get("/my-tickets", (req, res) => {
+    res.redirect("/giveaways#meus-sorteios");
 });
 
-// Monta o estado da Arena (null quando o sorteio não existe)
 async function computeArenaState(giveawayId) {
     {
 
         const { data: giveaway, error: giveawayError } = await supabase
             .from("giveaways")
-            .select("id, title, description, status, current_round, draw_in_progress, kind, winners_count, ends_at")
+            .select("id, title, description, status, current_round, draw_in_progress, kind, winners_count, ends_at, chat_command, finished_at")
             .eq("id", giveawayId)
             .maybeSingle();
 
@@ -8832,8 +8976,9 @@ async function computeArenaState(giveawayId) {
                 winnersCount: giveaway.winners_count,
                 endsAt: giveaway.ends_at
             },
-            chatCommand: CHAT_GIVEAWAY_COMMAND,
-            confirmedWinners: draws.filter(draw => draw.status === "confirmed").length,
+            chatCommand: chatCommandOf(giveaway),
+            confirmedWinners: confirmedDrawCount(draws),
+            finished: isGiveawayFinished(giveaway, confirmedDrawCount(draws)),
             currentDraw,
             winner: winnerUser
                 ? {
@@ -8920,7 +9065,7 @@ app.get("/arena/:id", async (req, res) => {
 
     const { data: giveaway, error } = await supabase
         .from("giveaways")
-        .select("id, title, kind")
+        .select("id, title, kind, chat_command")
         .eq("id", giveawayId)
         .maybeSingle();
 
@@ -8929,11 +9074,12 @@ app.get("/arena/:id", async (req, res) => {
     }
 
     const isChatGiveaway = giveaway.kind === "chat";
+    const chatCommand = chatCommandOf(giveaway);
 
     // Sorteio pelo chat: a lista de inscritos fica logo abaixo do giro (lado a lado, compacta)
     const participantsPanel = `
                 <section class="panel${isChatGiveaway ? " chat-entries-panel" : ""}">
-                    <h2>${isChatGiveaway ? `INSCRITOS · digite <strong>${escapeDashboardHtml(CHAT_GIVEAWAY_COMMAND)}</strong> no chat` : "Participantes do sorteio"}</h2>
+                    <h2>${isChatGiveaway ? `INSCRITOS · digite <strong>${escapeDashboardHtml(chatCommand)}</strong> no chat` : "Participantes do sorteio"}</h2>
                     <div id="participantsList">Carregando participantes...</div>
                 </section>`;
 
@@ -8987,7 +9133,7 @@ app.get("/arena/:id", async (req, res) => {
 
                         <div class="signup-banner" id="signupBanner" hidden>
                             <div class="signup-call">DIGITE NO CHAT</div>
-                            <div class="signup-command">${escapeDashboardHtml(CHAT_GIVEAWAY_COMMAND)}</div>
+                            <div class="signup-command">${escapeDashboardHtml(chatCommand)}</div>
                             <div class="signup-timer" id="signupTimer">--:--</div>
                             <div class="signup-note">para as inscrições encerrarem</div>
                         </div>
@@ -9059,16 +9205,19 @@ app.get("/arena/:id", async (req, res) => {
 // ===== Sorteio pelo chat (!euquero) =====
 
 // Sorteio pelo chat com inscrições abertas (cache curto: o chat pode mandar muitas mensagens)
-let openChatGiveawayCache = { id: null, at: 0 };
+let openChatGiveawayCache = { id: null, command: null, at: 0 };
 
-async function getOpenChatGiveawayId() {
+// Devolve { id, command } do sorteio com inscrições abertas, ou null
+async function getOpenChatGiveaway() {
     if (Date.now() - openChatGiveawayCache.at < 2000) {
-        return openChatGiveawayCache.id;
+        return openChatGiveawayCache.id
+            ? { id: openChatGiveawayCache.id, command: openChatGiveawayCache.command }
+            : null;
     }
 
     const { data, error } = await supabase
         .from("giveaways")
-        .select("id")
+        .select("id, chat_command")
         .eq("kind", "chat")
         .eq("status", "active")
         .gt("ends_at", new Date().toISOString())
@@ -9078,17 +9227,22 @@ async function getOpenChatGiveawayId() {
 
     if (error) throw error;
 
-    openChatGiveawayCache = { id: data?.id || null, at: Date.now() };
-    return openChatGiveawayCache.id;
+    openChatGiveawayCache = {
+        id: data?.id || null,
+        command: data ? chatCommandOf(data).toLowerCase() : null,
+        at: Date.now()
+    };
+
+    return data ? { id: openChatGiveawayCache.id, command: openChatGiveawayCache.command } : null;
 }
 
 function invalidateOpenChatGiveaway() {
-    openChatGiveawayCache = { id: null, at: 0 };
+    openChatGiveawayCache = { id: null, command: null, at: 0 };
 }
 
-function isChatGiveawayCommand(text) {
+function isChatGiveawayCommand(text, command) {
     const firstWord = String(text || "").trim().split(/\s+/)[0].toLowerCase();
-    return firstWord === CHAT_GIVEAWAY_COMMAND;
+    return Boolean(command) && firstWord === command;
 }
 
 // Fotos de perfil: juntamos as inscrições e buscamos até 100 de uma vez na Twitch
@@ -9135,11 +9289,15 @@ async function flushChatAvatars() {
 }
 
 async function handleChatGiveawayCommand(chatMessage) {
-    if (!isChatGiveawayCommand(chatMessage.message?.text)) return;
+    // A palavra muda por sorteio: consulta o sorteio aberto (cache de 2s) e compara a 1ª palavra
+    const text = String(chatMessage.message?.text || "").trim();
+    if (!text || text.length > 200) return;
 
     try {
-        const giveawayId = await getOpenChatGiveawayId();
-        if (!giveawayId) return;
+        const openGiveaway = await getOpenChatGiveaway();
+        if (!openGiveaway || !isChatGiveawayCommand(text, openGiveaway.command)) return;
+
+        const giveawayId = openGiveaway.id;
 
         const { data: entryNumber, error } = await supabase.rpc("join_chat_giveaway", {
             p_giveaway_id: giveawayId,
