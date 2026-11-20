@@ -8738,6 +8738,12 @@ async function getStreamElementsPoints(channelId, username) {
             signal: controller.signal
         });
 
+        // Quem ainda não tem pontos (ou teve os pontos zerados depois de um
+        // sorteio) não existe na lista do StreamElements: a API responde 404.
+        if (response.status === 404) {
+            return 0;
+        }
+
         if (!response.ok) {
             throw new Error(
                 `Erro ao consultar StreamElements. HTTP ${response.status}`
