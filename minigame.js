@@ -3,13 +3,24 @@
 const crypto = require("crypto");
 const { ANSWERS, VALID_GUESSES, normalizeWord } = require("./minigame-words");
 
-const COOLDOWN_HOURS = 20;
-const COOLDOWN_MS = COOLDOWN_HOURS * 60 * 60 * 1000;
+// Uma partida por dia, no horário de Brasília (vira à meia-noite)
+const GAME_TIMEZONE = "America/Sao_Paulo";
+const GAME_TIMEZONE_OFFSET = "-03:00";
+// Partida aberta há mais tempo que isso é encerrada sem pontos
+const MAX_GAME_MS = 20 * 60 * 60 * 1000;
 const MAX_ATTEMPTS = 6;
 const POINTS_BY_ATTEMPT = [180, 150, 120, 90, 60, 30];
 const CREDIT_MAX_ATTEMPTS = 5;
 // Evita repetir palavras recentes para o mesmo usuário
 const RECENT_WORDS_TO_AVOID = 60;
+
+// Meia-noite (horário de Brasília) do dia seguinte ao da data informada
+function nextDayStart(date) {
+    const key = new Date(date).toLocaleDateString("en-CA", { timeZone: GAME_TIMEZONE });
+    const next = new Date(`${key}T00:00:00Z`);
+    next.setUTCDate(next.getUTCDate() + 1);
+    return new Date(`${next.toISOString().slice(0, 10)}T00:00:00${GAME_TIMEZONE_OFFSET}`).getTime();
+}
 
 // Cores: g = verde (lugar certo), y = amarela (está na palavra, lugar errado), r = vermelha (não está)
 function evaluateGuess(guess, word) {
@@ -106,13 +117,12 @@ module.exports = function registerMinigame(app, deps) {
     function buildState(game) {
         const now = Date.now();
         const startedAt = game ? new Date(game.started_at).getTime() : 0;
-        const nextAvailable = game ? startedAt + COOLDOWN_MS : 0;
+        const nextAvailable = game ? nextDayStart(startedAt) : 0;
         const finished = game && game.status !== "playing";
 
         return {
             ok: true,
             serverTime: now,
-            cooldownHours: COOLDOWN_HOURS,
             pointsByAttempt: POINTS_BY_ATTEMPT,
             canPlay: !game || now >= nextAvailable,
             nextAvailableAt: game && now < nextAvailable ? new Date(nextAvailable).toISOString() : null,
@@ -247,8 +257,8 @@ module.exports = function registerMinigame(app, deps) {
                             <ul class="mg-points">${pointsList}<li><strong>Não acertou:</strong> 0 pontos</li></ul>
                             <h3>Regras</h3>
                             <ul>
-                                <li>Você pode jogar <strong>uma vez a cada ${COOLDOWN_HOURS} horas</strong>, contando a partir do clique em Iniciar.</li>
-                                <li><strong>Se sair da página durante a partida, você perde a chance</strong> e só joga de novo depois das ${COOLDOWN_HOURS} horas.</li>
+                                <li>Você pode jogar <strong>uma vez por dia</strong>. O dia vira à meia-noite (horário de Brasília).</li>
+                                <li><strong>Se sair da página durante a partida, você perde a chance</strong> e só joga de novo no dia seguinte.</li>
                                 <li>Os pontos caem no seu saldo do canal (StreamElements) e podem ser usados para comprar tickets.</li>
                             </ul>
                         </section>
@@ -257,7 +267,7 @@ module.exports = function registerMinigame(app, deps) {
                     <div class="mg-modal" id="mgLeaveModal" hidden>
                         <div class="mg-modal-card" role="dialog" aria-modal="true" aria-labelledby="mgLeaveTitle">
                             <h2 id="mgLeaveTitle">Sair da partida?</h2>
-                            <p>Se você sair agora, <strong>perde a chance desta partida</strong> e só poderá jogar novamente depois de ${COOLDOWN_HOURS} horas.</p>
+                            <p>Se você sair agora, <strong>perde a chance desta partida</strong> e só poderá jogar novamente amanhã.</p>
                             <div class="mg-modal-actions">
                                 <button type="button" class="mg-start" id="mgStay">Continuar jogando</button>
                                 <button type="button" class="mg-leave" id="mgLeave">Sair mesmo assim</button>
@@ -296,16 +306,15 @@ module.exports = function registerMinigame(app, deps) {
         try {
             const word = await pickWord(twitchId);
 
-            const { error } = await supabase.rpc("start_daily_word_game", {
+            const { error } = await supabase.rpc("start_daily_word_game_today", {
                 p_twitch_id: twitchId,
-                p_word: word,
-                p_cooldown_hours: COOLDOWN_HOURS
+                p_word: word
             });
 
             if (error) {
                 if (String(error.message).includes("COOLDOWN")) {
                     const game = await loadLastGame(twitchId);
-                    return res.status(409).json({ ...buildState(game), ok: false, error: "Você já jogou. Aguarde o tempo acabar." });
+                    return res.status(409).json({ ...buildState(game), ok: false, error: "Você já jogou hoje. Volte amanhã!" });
                 }
                 throw error;
             }
@@ -341,7 +350,7 @@ module.exports = function registerMinigame(app, deps) {
                 return res.status(409).json({ ...buildState(game), ok: false, error: "Nenhuma partida em andamento." });
             }
 
-            if (Date.now() - new Date(game.started_at).getTime() > COOLDOWN_MS) {
+            if (Date.now() - new Date(game.started_at).getTime() > MAX_GAME_MS) {
                 await abandonPlayingGame(user.id);
                 return res.status(409).json({ ...buildState(await loadLastGame(user.id)), ok: false, error: "O tempo desta partida acabou." });
             }
