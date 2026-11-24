@@ -3382,7 +3382,7 @@ app.get("/dashboard", async (req, res) => {
 
             <a href="/minigame" class="dashboard-card">
                 <strong>✦ Minigame Diário</strong>
-                <span>Descubra a palavra secreta e ganhe até 180 pontos a cada 20 horas.</span>
+                <span>Descubra a palavra secreta e ganhe até 180 pontos todo dia.</span>
             </a>
 
             <a href="https://www.twitch.tv/${LIVE_CHANNEL_LOGIN}" target="_blank" rel="noopener noreferrer" class="dashboard-card">
